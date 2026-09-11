@@ -1,0 +1,90 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+
+# Testing / Coverage / Linters
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# Environment Variables / Secrets
+.env
+.env.dev
+.env.qa
+.env.prod
+.env.local
+
+# Environment templates are safe to commit
+!.env.example
+!.env.dev.example
+!.env.qa.example
+!.env.prod.example
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Docker Local Data
+docker-data/
+volumes/
+
+# AI / ML Model Files
+# Keep large model binaries out of Git.
+*.rpk
+*.onnx
+*.tflite
+*.pt
+*.pth
+
+# Camera Captures / Video Recordings
+*.mp4
+*.avi
+*.mkv
+*.mov
+captures/
+recordings/
+
+# Deployment Artifacts
+*.tar
+*.tar.gz
+*.sha256
+
+# Project-specific Runtime Files
+current-version
+previous-version

@@ -1,0 +1,160 @@
+body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background-color: #1e1e24;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .camera {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+        }
+
+        .slider-container {
+            margin: 20px 0;
+        }
+
+        .dpad-container {
+            display: grid;
+            grid-template-columns: repeat(3, 70px);
+            grid-template-rows: repeat(3, 70px);
+            gap: 10px;
+            justify-content: center;
+            align-items: center;
+            margin: 20px auto;
+        }
+
+        .control {
+            width: 100%;
+            height: 100%;
+            font-size: 24px;
+            font-weight: bold;
+            color: #fff;
+            background-color: #007bff;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            user-select: none;
+            touch-action: manipulation;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .control:active {
+            background-color: #0056b3;
+            transform: scale(0.95);
+        }
+
+        .control.stop {
+            background-color: #dc3545;
+        }
+
+        .control.stop:active {
+            background-color: #a71d2a;
+        }
+
+        #forward {
+            grid-column: 2;
+            grid-row: 1;
+        }
+
+        #left {
+            grid-column: 1;
+            grid-row: 2;
+        }
+
+        #stop {
+            grid-column: 2;
+            grid-row: 2;
+        }
+
+        #right {
+            grid-column: 3;
+            grid-row: 2;
+        }
+
+        #backward {
+            grid-column: 2;
+            grid-row: 3;
+        }
+
+        .status-row {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin: 14px auto 18px;
+        }
+
+        .battery-card {
+            min-width: 220px;
+            padding: 14px 16px;
+            background: #2b2b33;
+            border-radius: 12px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+        }
+
+        .battery-title {
+            font-size: 14px;
+            opacity: 0.8;
+            margin-bottom: 12px;
+        }
+
+        .battery-icon {
+            position: relative;
+            width: 80%;
+            height: 40%;
+            margin: 0 auto 14px;
+            padding: 3px;
+            border: 3px solid #d1d5db;
+            border-radius: 6px;
+            background: #111;
+            box-sizing: border-box;
+        }
+
+        .battery-icon::after {
+            content: "";
+            position: absolute;
+            top: 50%;
+            right: -8px;
+            width: 6px;
+            height: 14px;
+            background: #d1d5db;
+            border-radius: 0 3px 3px 0;
+            transform: translateY(-50%);
+        }
+
+        .battery-icon-level {
+            width: 0%;
+            height: 100%;
+            background: #6b7280;
+            border-radius: 2px;
+            transition: width 0.25s ease, background 0.25s ease;
+        }
+
+        .battery-bar {
+            width: 200px;
+            max-width: 100%;
+            height: 12px;
+            background: #111;
+            border-radius: 8px;
+            overflow: hidden;
+            margin: 8px auto 0;
+        }
+
+        .battery-fill {
+            width: 0%;
+            height: 100%;
+            background: #6b7280;
+            transition: width 0.25s ease, background 0.25s ease;
+        }
+
+        .battery-sub {
+            font-size: 13px;
+            margin-top: 8px;
+            opacity: 0.85;
+        }
+
