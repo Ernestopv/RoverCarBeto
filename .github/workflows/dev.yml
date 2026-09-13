@@ -24,6 +24,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # ---------------------------------------------------------
+      # VALIDATE SOURCE
+      # ---------------------------------------------------------
       - name: Validate Python syntax
         run: |
           python -m py_compile api.py
@@ -32,7 +35,18 @@ jobs:
           python -m py_compile tests/test_dev.py
 
       # ---------------------------------------------------------
-      # BUILD DEV IMAGE
+      # VALIDATE COMPOSE
+      # ---------------------------------------------------------
+      - name: Validate DEV compose
+        run: |
+          docker compose \
+            --env-file .env.dev.example \
+            -f docker-compose.dev.yml \
+            config >/dev/null
+
+      # ---------------------------------------------------------
+      # BUILD + START DEV IMAGE
+      # nginx is the only published port: 8000
       # ---------------------------------------------------------
       - name: Build and start DEV environment
         run: |
@@ -42,29 +56,38 @@ jobs:
             up -d --build
 
       # ---------------------------------------------------------
-      # WAIT FOR SERVICES
+      # WAIT FOR SERVICES THROUGH NGINX
       # ---------------------------------------------------------
-      - name: Wait for services
+      - name: Wait for DEV services
+        shell: bash
         run: |
           for i in {1..45}; do
-            API=0
+            HEALTH=0
             UI=0
+            API=0
             SIM=0
 
-            curl -fsS http://127.0.0.1:5000/health >/dev/null && API=1 || true
+            curl -fsS http://127.0.0.1:8000/health >/dev/null && HEALTH=1 || true
             curl -fsS http://127.0.0.1:8000/ >/dev/null && UI=1 || true
-            curl -fsS http://127.0.0.1:8081/health >/dev/null && SIM=1 || true
+            curl -fsS http://127.0.0.1:8000/api/rover/status >/dev/null && API=1 || true
+            curl -fsS http://127.0.0.1:8000/simulator/health >/dev/null && SIM=1 || true
 
-            if [ "$API" = 1 ] && [ "$UI" = 1 ] && [ "$SIM" = 1 ]; then
-              echo "All DEV services are ready"
+            if [ "$HEALTH" = 1 ] && [ "$UI" = 1 ] && [ "$API" = 1 ] && [ "$SIM" = 1 ]; then
+              echo "All DEV services are ready through nginx"
               exit 0
             fi
 
             echo "Waiting for DEV services... attempt $i/45"
+            echo "health=$HEALTH ui=$UI api=$API simulator=$SIM"
             sleep 2
           done
 
-          echo "Services did not become ready"
+          echo "DEV services did not become ready"
+
+          docker compose \
+            --env-file .env.dev.example \
+            -f docker-compose.dev.yml \
+            ps
 
           docker compose \
             --env-file .env.dev.example \
@@ -102,7 +125,6 @@ jobs:
 
       # ---------------------------------------------------------
       # LOGIN GHCR
-      # GITHUB_TOKEN is supplied automatically by GitHub Actions.
       # ---------------------------------------------------------
       - name: Login to GitHub Container Registry
         if: github.event_name == 'push'
@@ -133,8 +155,8 @@ jobs:
           echo "${IMAGE_NAME}:${GITHUB_SHA}"
 
       # ---------------------------------------------------------
-      # OPTIONAL dev TAG
-      # Only develop updates the floating :dev tag.
+      # FLOATING :dev TAG
+      # Only develop updates this alias.
       # ---------------------------------------------------------
       - name: Publish DEV tag
         if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
@@ -148,13 +170,18 @@ jobs:
       # ---------------------------------------------------------
       # DEBUG
       # ---------------------------------------------------------
-      - name: Show Docker logs on failure
+      - name: Show Docker status and logs on failure
         if: failure()
         run: |
           docker compose \
             --env-file .env.dev.example \
             -f docker-compose.dev.yml \
-            logs
+            ps || true
+
+          docker compose \
+            --env-file .env.dev.example \
+            -f docker-compose.dev.yml \
+            logs || true
 
       # ---------------------------------------------------------
       # CLEANUP
