@@ -15,8 +15,17 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write
+
+env:
+  AZURE_CONTAINER_APP_NAME: rover-car-beto-dev
+  AZURE_DEV_URL: https://rover-car-beto-dev.politemushroom-742c3fcd.spaincentral.azurecontainerapps.io
 
 jobs:
+  # =============================================================
+  # CI DEV
+  # Build, run locally with Docker Compose, test and publish GHCR.
+  # =============================================================
   dev:
     runs-on: ubuntu-latest
 
@@ -45,7 +54,7 @@ jobs:
             config >/dev/null
 
       # ---------------------------------------------------------
-      # BUILD + START DEV IMAGE
+      # BUILD + START DEV IMAGE LOCALLY
       # nginx is the only published port: 8000
       # ---------------------------------------------------------
       - name: Build and start DEV environment
@@ -72,7 +81,10 @@ jobs:
             curl -fsS http://127.0.0.1:8000/api/rover/status >/dev/null && API=1 || true
             curl -fsS http://127.0.0.1:8000/simulator/health >/dev/null && SIM=1 || true
 
-            if [ "$HEALTH" = 1 ] && [ "$UI" = 1 ] && [ "$API" = 1 ] && [ "$SIM" = 1 ]; then
+            if [ "$HEALTH" = 1 ] && \
+               [ "$UI" = 1 ] && \
+               [ "$API" = 1 ] && \
+               [ "$SIM" = 1 ]; then
               echo "All DEV services are ready through nginx"
               exit 0
             fi
@@ -87,17 +99,17 @@ jobs:
           docker compose \
             --env-file .env.dev.example \
             -f docker-compose.dev.yml \
-            ps
+            ps || true
 
           docker compose \
             --env-file .env.dev.example \
             -f docker-compose.dev.yml \
-            logs
+            logs || true
 
           exit 1
 
       # ---------------------------------------------------------
-      # TEST
+      # TEST LOCALLY
       # ---------------------------------------------------------
       - name: Install pytest
         run: |
@@ -110,14 +122,13 @@ jobs:
 
       # ---------------------------------------------------------
       # PREPARE GHCR IMAGE NAME
-      # Only needed for push events.
+      # PRs test only; push/manual runs may publish.
       # ---------------------------------------------------------
       - name: Prepare GHCR image name
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
-
           echo "IMAGE_NAME=ghcr.io/${OWNER}/rover-car-beto" >> "$GITHUB_ENV"
 
           echo "Image will be:"
@@ -127,7 +138,7 @@ jobs:
       # LOGIN GHCR
       # ---------------------------------------------------------
       - name: Login to GitHub Container Registry
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -137,8 +148,8 @@ jobs:
       # ---------------------------------------------------------
       # PUSH EXACT IMAGE TESTED IN DEV
       # ---------------------------------------------------------
-      - name: Tag DEV image
-        if: github.event_name == 'push'
+      - name: Tag DEV image with commit SHA
+        if: github.event_name != 'pull_request'
         run: |
           docker image inspect rover-car-beto:dev
 
@@ -146,8 +157,8 @@ jobs:
             rover-car-beto:dev \
             "${IMAGE_NAME}:${GITHUB_SHA}"
 
-      - name: Push image to GHCR
-        if: github.event_name == 'push'
+      - name: Push commit image to GHCR
+        if: github.event_name != 'pull_request'
         run: |
           docker push "${IMAGE_NAME}:${GITHUB_SHA}"
 
@@ -155,11 +166,11 @@ jobs:
           echo "${IMAGE_NAME}:${GITHUB_SHA}"
 
       # ---------------------------------------------------------
-      # FLOATING :dev TAG
-      # Only develop updates this alias.
+      # FLOATING :dev ALIAS
+      # Only develop updates the floating DEV tag.
       # ---------------------------------------------------------
       - name: Publish DEV tag
-        if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
         run: |
           docker tag \
             rover-car-beto:dev \
@@ -184,7 +195,7 @@ jobs:
             logs || true
 
       # ---------------------------------------------------------
-      # CLEANUP
+      # CLEANUP LOCAL DEV
       # ---------------------------------------------------------
       - name: Stop DEV environment
         if: always()
@@ -193,3 +204,136 @@ jobs:
             --env-file .env.dev.example \
             -f docker-compose.dev.yml \
             down -v
+
+  # =============================================================
+  # CD DEV
+  # Deploy the exact SHA image to Azure Container Apps.
+  #
+  # Feature branches and PRs DO NOT deploy to the shared Azure DEV
+  # environment. Only develop (or a manual run from develop) does.
+  # =============================================================
+  deploy-dev:
+    needs: dev
+    runs-on: ubuntu-latest
+
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/develop'
+
+    environment:
+      name: dev
+      url: ${{ env.AZURE_DEV_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # OIDC: no long-lived Azure password is stored in GitHub.
+      - name: Login to Azure
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Container Apps CLI extension
+        run: |
+          az extension add \
+            --name containerapp \
+            --upgrade \
+            --yes
+
+      - name: Prepare Azure image name
+        shell: bash
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}"
+
+          echo "AZURE_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Deploying ${IMAGE}"
+
+      - name: Deploy image to Azure Container Apps DEV
+        run: |
+          az containerapp update \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "${AZURE_IMAGE}" \
+            --output none
+
+      - name: Show deployed image
+        run: |
+          DEPLOYED_IMAGE="$(
+            az containerapp show \
+              --name "${AZURE_CONTAINER_APP_NAME}" \
+              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+              --query "properties.template.containers[0].image" \
+              --output tsv
+          )"
+
+          echo "Expected: ${AZURE_IMAGE}"
+          echo "Deployed: ${DEPLOYED_IMAGE}"
+
+          test "${DEPLOYED_IMAGE}" = "${AZURE_IMAGE}"
+
+      # ---------------------------------------------------------
+      # WAIT FOR THE NEW AZURE REVISION
+      # ---------------------------------------------------------
+      - name: Wait for Azure DEV
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            HEALTH=0
+            UI=0
+            API=0
+            SIM=0
+
+            curl -fsS "${AZURE_DEV_URL}/health" >/dev/null && HEALTH=1 || true
+            curl -fsS "${AZURE_DEV_URL}/" >/dev/null && UI=1 || true
+            curl -fsS "${AZURE_DEV_URL}/api/rover/status" >/dev/null && API=1 || true
+            curl -fsS "${AZURE_DEV_URL}/simulator/health" >/dev/null && SIM=1 || true
+
+            if [ "$HEALTH" = 1 ] && \
+               [ "$UI" = 1 ] && \
+               [ "$API" = 1 ] && \
+               [ "$SIM" = 1 ]; then
+              echo "Azure DEV is ready"
+              exit 0
+            fi
+
+            echo "Waiting for Azure DEV revision... attempt $i/60"
+            echo "health=$HEALTH ui=$UI api=$API simulator=$SIM"
+            sleep 5
+          done
+
+          echo "Azure DEV did not become ready"
+
+          az containerapp revision list \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --output table || true
+
+          exit 1
+
+      # ---------------------------------------------------------
+      # RUN THE SAME INTEGRATION TESTS AGAINST AZURE
+      # ---------------------------------------------------------
+      - name: Install pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: Run integration tests against Azure DEV
+        env:
+          TEST_BASE_URL: ${{ env.AZURE_DEV_URL }}
+        run: |
+          pytest -q tests/test_dev.py
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "## Azure DEV deployed"
+            echo ""
+            echo "- Image: \`${AZURE_IMAGE}\`"
+            echo "- Container App: \`${AZURE_CONTAINER_APP_NAME}\`"
+            echo "- URL: ${AZURE_DEV_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
