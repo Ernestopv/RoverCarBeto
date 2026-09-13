@@ -19,7 +19,7 @@ WIDTH = int(os.getenv("CAMERA_WIDTH", "640"))
 HEIGHT = int(os.getenv("CAMERA_HEIGHT", "480"))
 FPS = int(os.getenv("CAMERA_FPS", "30"))
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "55"))
-PORT = int(os.getenv("UI_PORT", "8000"))
+PORT = int(os.getenv("UI_PORT", "8001"))
 
 # CAMERA SOURCE
 #   imx500     -> Raspberry Pi AI Camera
@@ -34,6 +34,8 @@ if CAMERA_SOURCE not in ("imx500", "simulator"):
     sys.exit(1)
 
 # CONNECTION TO API.PY (Flask backend on port 5000)
+# This URL is used server-side by ui.py, so keep it as an absolute localhost URL.
+# The browser calls /api/rover/* on the UI, and this process proxies those calls to api.py.
 API_BASE_URL = (
     os.getenv("API_BASE_URL")
     or os.getenv("ROVER_API_URL")

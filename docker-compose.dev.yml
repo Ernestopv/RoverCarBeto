@@ -3,14 +3,22 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+
     image: rover-car-beto:dev
     restart: unless-stopped
 
     environment:
       ENVIRONMENT: dev
+
+      # Simulator
       SIMULATOR_ENABLED: "true"
       SIM_PORT: 8081
 
+      # UI runs internally on 8001.
+      # nginx is the only public entry point on 8000.
+      UI_PORT: 8001
+
+      # Camera / Rover
       CAMERA_SOURCE: simulator
       API_BASE_URL: http://127.0.0.1:5000/api/rover
       ROVER_IP: 127.0.0.1:8081
@@ -33,13 +41,13 @@ services:
       SIM_WHEEL_BASE: ${SIM_WHEEL_BASE:-0.32}
       SIM_COMMAND_TIMEOUT: ${SIM_COMMAND_TIMEOUT:-1.5}
 
+    # nginx is the only port exposed outside the container.
     ports:
-      - "5000:5000"
       - "8000:8000"
-      - "8081:8081"
 
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5000/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
       interval: 2s
       timeout: 2s
       retries: 20
+      start_period: 10s

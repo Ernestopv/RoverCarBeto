@@ -583,7 +583,7 @@ latency: ${s.latency_ms} ms`;
 
 async function refresh() {
     try {
-        const r = await fetch('/state', {cache:'no-store'});
+        const r = await fetch('./state', {cache:'no-store'});
         const data = await r.json();
         latest = data;
         render(data);
@@ -594,7 +594,7 @@ async function refresh() {
 }
 
 async function scenario(payload) {
-    await fetch('/scenario', {
+    await fetch('./scenario', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify(payload)
@@ -619,7 +619,7 @@ function failNext() {
 }
 
 async function resetRover() {
-    await fetch('/reset', {method:'POST'});
+    await fetch('./reset', {method:'POST'});
     await refresh();
 }
 
