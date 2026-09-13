@@ -10,6 +10,12 @@ on:
     branches:
       - develop
 
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   dev:
     runs-on: ubuntu-latest
@@ -25,6 +31,9 @@ jobs:
           python -m py_compile simulator/rover_simulator.py
           python -m py_compile tests/test_dev.py
 
+      # ---------------------------------------------------------
+      # BUILD DEV IMAGE
+      # ---------------------------------------------------------
       - name: Build and start DEV environment
         run: |
           docker compose \
@@ -32,6 +41,9 @@ jobs:
             -f docker-compose.dev.yml \
             up -d --build
 
+      # ---------------------------------------------------------
+      # WAIT FOR SERVICES
+      # ---------------------------------------------------------
       - name: Wait for services
         run: |
           for i in {1..45}; do
@@ -48,10 +60,12 @@ jobs:
               exit 0
             fi
 
+            echo "Waiting for DEV services... attempt $i/45"
             sleep 2
           done
 
           echo "Services did not become ready"
+
           docker compose \
             --env-file .env.dev.example \
             -f docker-compose.dev.yml \
@@ -59,14 +73,81 @@ jobs:
 
           exit 1
 
+      # ---------------------------------------------------------
+      # TEST
+      # ---------------------------------------------------------
       - name: Install pytest
         run: |
+          python -m pip install --upgrade pip
           python -m pip install pytest
 
       - name: Run DEV tests
         run: |
           pytest -q tests/test_dev.py
 
+      # ---------------------------------------------------------
+      # PREPARE GHCR IMAGE NAME
+      # Only needed for push events.
+      # ---------------------------------------------------------
+      - name: Prepare GHCR image name
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+
+          echo "IMAGE_NAME=ghcr.io/${OWNER}/rover-car-beto" >> "$GITHUB_ENV"
+
+          echo "Image will be:"
+          echo "ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}"
+
+      # ---------------------------------------------------------
+      # LOGIN GHCR
+      # GITHUB_TOKEN is supplied automatically by GitHub Actions.
+      # ---------------------------------------------------------
+      - name: Login to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---------------------------------------------------------
+      # PUSH EXACT IMAGE TESTED IN DEV
+      # ---------------------------------------------------------
+      - name: Tag DEV image
+        if: github.event_name == 'push'
+        run: |
+          docker image inspect rover-car-beto:dev
+
+          docker tag \
+            rover-car-beto:dev \
+            "${IMAGE_NAME}:${GITHUB_SHA}"
+
+      - name: Push image to GHCR
+        if: github.event_name == 'push'
+        run: |
+          docker push "${IMAGE_NAME}:${GITHUB_SHA}"
+
+          echo "Published:"
+          echo "${IMAGE_NAME}:${GITHUB_SHA}"
+
+      # ---------------------------------------------------------
+      # OPTIONAL dev TAG
+      # Only develop updates the floating :dev tag.
+      # ---------------------------------------------------------
+      - name: Publish DEV tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+        run: |
+          docker tag \
+            rover-car-beto:dev \
+            "${IMAGE_NAME}:dev"
+
+          docker push "${IMAGE_NAME}:dev"
+
+      # ---------------------------------------------------------
+      # DEBUG
+      # ---------------------------------------------------------
       - name: Show Docker logs on failure
         if: failure()
         run: |
@@ -75,6 +156,9 @@ jobs:
             -f docker-compose.dev.yml \
             logs
 
+      # ---------------------------------------------------------
+      # CLEANUP
+      # ---------------------------------------------------------
       - name: Stop DEV environment
         if: always()
         run: |
