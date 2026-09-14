@@ -1,4 +1,4 @@
-name: DEV
+name: Rover CI/CD
 
 on:
   push:
@@ -9,11 +9,13 @@ on:
   pull_request:
     branches:
       - develop
+      - main
 
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
   packages: write
   id-token: write
 
@@ -146,37 +148,110 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ---------------------------------------------------------
-      # PUSH EXACT IMAGE TESTED IN DEV
+      # PUBLISH MULTI-ARCH IMAGE
+      #
+      # AMD64:
+      #   Reuse the EXACT image that was already built and tested
+      #   by Docker Compose on the GitHub runner.
+      #
+      # ARM64:
+      #   Build the same Dockerfile/context for Raspberry Pi 5.
+      #
+      # Final immutable tag:
+      #   ghcr.io/<owner>/rover-car-beto:<GITHUB_SHA>
+      #     ├── linux/amd64  -> Azure DEV / QA
+      #     └── linux/arm64  -> Raspberry Pi PROD
       # ---------------------------------------------------------
-      - name: Tag DEV image with commit SHA
+
+      - name: Set up QEMU
         if: github.event_name != 'pull_request'
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        if: github.event_name != 'pull_request'
+        uses: docker/setup-buildx-action@v4
+
+      # Publish the exact AMD64 image that passed the local DEV tests.
+      - name: Push tested AMD64 image
+        if: github.event_name != 'pull_request'
+        shell: bash
         run: |
           docker image inspect rover-car-beto:dev
 
           docker tag \
             rover-car-beto:dev \
-            "${IMAGE_NAME}:${GITHUB_SHA}"
+            "${IMAGE_NAME}:${GITHUB_SHA}-amd64"
 
-      - name: Push commit image to GHCR
+          docker push "${IMAGE_NAME}:${GITHUB_SHA}-amd64"
+
+          echo "Published tested AMD64:"
+          echo "${IMAGE_NAME}:${GITHUB_SHA}-amd64"
+
+      # Build the ARM64 sibling image for Raspberry Pi 5.
+      - name: Build and push ARM64 image
         if: github.event_name != 'pull_request'
+        shell: bash
         run: |
-          docker push "${IMAGE_NAME}:${GITHUB_SHA}"
+          docker buildx build \
+            --platform linux/arm64 \
+            --file Dockerfile \
+            --tag "${IMAGE_NAME}:${GITHUB_SHA}-arm64" \
+            --cache-from type=gha,scope=rover-arm64 \
+            --cache-to type=gha,mode=max,scope=rover-arm64 \
+            --push \
+            .
 
-          echo "Published:"
+          echo "Published ARM64:"
+          echo "${IMAGE_NAME}:${GITHUB_SHA}-arm64"
+
+      # Create one immutable multi-platform tag that points to both
+      # architecture-specific images.
+      - name: Create multi-arch SHA manifest
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${GITHUB_SHA}" \
+            "${IMAGE_NAME}:${GITHUB_SHA}-amd64" \
+            "${IMAGE_NAME}:${GITHUB_SHA}-arm64"
+
+          echo "Published multi-arch image:"
           echo "${IMAGE_NAME}:${GITHUB_SHA}"
+
+      - name: Verify multi-arch image
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          docker buildx imagetools inspect "${IMAGE_NAME}:${GITHUB_SHA}"
+
+          RAW="$(
+            docker buildx imagetools inspect \
+              --raw \
+              "${IMAGE_NAME}:${GITHUB_SHA}"
+          )"
+
+          echo "${RAW}" | grep -q '"architecture":"amd64"'
+          echo "${RAW}" | grep -q '"architecture":"arm64"'
+
+          echo "Verified linux/amd64 + linux/arm64"
 
       # ---------------------------------------------------------
       # FLOATING :dev ALIAS
-      # Only develop updates the floating DEV tag.
+      # Only develop updates the floating DEV alias.
+      # The alias points to the same multi-arch manifest.
       # ---------------------------------------------------------
       - name: Publish DEV tag
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+        shell: bash
         run: |
-          docker tag \
-            rover-car-beto:dev \
-            "${IMAGE_NAME}:dev"
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:dev" \
+            "${IMAGE_NAME}:${GITHUB_SHA}"
 
-          docker push "${IMAGE_NAME}:dev"
+          echo "Updated:"
+          echo "${IMAGE_NAME}:dev -> ${IMAGE_NAME}:${GITHUB_SHA}"
 
       # ---------------------------------------------------------
       # DEBUG
@@ -206,6 +281,104 @@ jobs:
             down -v
 
   # =============================================================
+  # DEV FIFO GATE
+  #
+  # CI jobs may run in parallel, but the shared Azure DEV environment
+  # must be used in commit/run order:
+  #
+  #   A -> DEV deploy/tests -> B -> DEV deploy/tests -> C ...
+  #
+  # A newer run waits until every older develop run has either:
+  #   * completed its deploy-dev job, or
+  #   * completed without reaching deploy-dev.
+  #
+  # QA does NOT block the next DEV run. Once A has completed deploy-dev,
+  # B may use DEV even if A is waiting for QA approval.
+  # =============================================================
+  wait-dev-turn:
+    name: Wait for DEV turn
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/develop'
+
+    permissions:
+      actions: read
+      contents: read
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      CURRENT_RUN_ID: ${{ github.run_id }}
+      CURRENT_RUN_NUMBER: ${{ github.run_number }}
+
+    steps:
+      - name: Wait for older DEV deployments
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WORKFLOW_ID="$(
+            gh api \
+              "repos/${REPOSITORY}/actions/runs/${CURRENT_RUN_ID}" \
+              --jq '.workflow_id'
+          )"
+
+          echo "Workflow ID: ${WORKFLOW_ID}"
+          echo "Current run number: ${CURRENT_RUN_NUMBER}"
+          echo "Waiting only for older develop runs to finish their DEV stage."
+
+          while true; do
+            BLOCKERS=0
+
+            while IFS=$'\t' read -r RUN_ID RUN_NUMBER RUN_STATUS; do
+              [ -z "${RUN_ID:-}" ] && continue
+
+              # A fully completed older workflow cannot still be using DEV.
+              if [ "${RUN_STATUS}" = "completed" ]; then
+                continue
+              fi
+
+              DEV_JOB_STATUS="$(
+                gh api \
+                  "repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+                  --jq '[.jobs[] | select(.name == "deploy-dev")][0].status // ""'
+              )"
+
+              # The older run has already released the shared DEV environment.
+              if [ "${DEV_JOB_STATUS}" = "completed" ]; then
+                continue
+              fi
+
+              BLOCKERS=$((BLOCKERS + 1))
+
+              if [ -n "${DEV_JOB_STATUS}" ]; then
+                echo "Blocked by run #${RUN_NUMBER} (${RUN_ID}): deploy-dev=${DEV_JOB_STATUS}"
+              else
+                echo "Blocked by run #${RUN_NUMBER} (${RUN_ID}): DEV stage has not started yet"
+              fi
+            done < <(
+              gh api --paginate \
+                "repos/${REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?branch=develop&per_page=100" \
+                --jq ".workflow_runs[]
+                      | select(.run_number < (${CURRENT_RUN_NUMBER} | tonumber))
+                      | select(.event == \"push\" or .event == \"workflow_dispatch\")
+                      | [.id, .run_number, .status]
+                      | @tsv"
+            )
+
+            if [ "${BLOCKERS}" -eq 0 ]; then
+              echo "DEV turn acquired for run #${CURRENT_RUN_NUMBER}."
+              exit 0
+            fi
+
+            echo "${BLOCKERS} older DEV run(s) still ahead. Retrying in 15 seconds..."
+            sleep 15
+          done
+
+  # =============================================================
   # CD DEV
   # Deploy the exact SHA image to Azure Container Apps.
   #
@@ -213,8 +386,16 @@ jobs:
   # environment. Only develop (or a manual run from develop) does.
   # =============================================================
   deploy-dev:
-    needs: dev
+    needs:
+      - dev
+      - wait-dev-turn
     runs-on: ubuntu-latest
+
+    # Safety net: even if two gates were released at nearly the same instant,
+    # GitHub queues the shared DEV deployment instead of cancelling it.
+    concurrency:
+      group: rover-shared-dev
+      queue: max
 
     if: >
       github.event_name != 'pull_request' &&
@@ -339,13 +520,121 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # =============================================================
+  # QA FIFO GATE
+  #
+  # Cada commit que termina DEV entra en la cola de QA en orden.
+  # Solo el commit más antiguo pendiente llega al Environment "qa"
+  # y solicita aprobación.
+  #
+  # Ejemplo:
+  #   A -> QA approval -> deploy/test QA
+  #   B -> espera a A
+  #   C -> espera a B
+  #   D -> espera a C
+  #
+  # Si A es rechazado o falla, su deploy-qa termina y B puede continuar.
+  # =============================================================
+  wait-qa-turn:
+    name: Wait for QA turn
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440
+
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/develop'
+
+    permissions:
+      actions: read
+      contents: read
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      CURRENT_RUN_ID: ${{ github.run_id }}
+      CURRENT_RUN_NUMBER: ${{ github.run_number }}
+
+    steps:
+      - name: Wait for older QA candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WORKFLOW_ID="$(
+            gh api \
+              "repos/${REPOSITORY}/actions/runs/${CURRENT_RUN_ID}" \
+              --jq '.workflow_id'
+          )"
+
+          echo "Workflow ID: ${WORKFLOW_ID}"
+          echo "Current run number: ${CURRENT_RUN_NUMBER}"
+          echo "Waiting for older develop runs to finish their QA stage."
+
+          while true; do
+            BLOCKERS=0
+
+            while IFS=$'\t' read -r RUN_ID RUN_NUMBER RUN_STATUS; do
+              [ -z "${RUN_ID:-}" ] && continue
+
+              # A completed older workflow can no longer occupy QA.
+              if [ "${RUN_STATUS}" = "completed" ]; then
+                continue
+              fi
+
+              QA_JOB_STATUS="$(
+                gh api \
+                  "repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+                  --jq '[.jobs[] | select(.name == "deploy-qa")][0].status // ""'
+              )"
+
+              # Once the older QA job is complete (success, failure or rejection),
+              # this run no longer blocks the next candidate.
+              if [ "${QA_JOB_STATUS}" = "completed" ]; then
+                continue
+              fi
+
+              BLOCKERS=$((BLOCKERS + 1))
+
+              if [ -n "${QA_JOB_STATUS}" ]; then
+                echo "Blocked by run #${RUN_NUMBER} (${RUN_ID}): deploy-qa=${QA_JOB_STATUS}"
+              else
+                echo "Blocked by run #${RUN_NUMBER} (${RUN_ID}): QA stage has not started yet"
+              fi
+            done < <(
+              gh api --paginate \
+                "repos/${REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?branch=develop&per_page=100" \
+                --jq ".workflow_runs[]
+                      | select(.run_number < (${CURRENT_RUN_NUMBER} | tonumber))
+                      | select(.event == \"push\" or .event == \"workflow_dispatch\")
+                      | [.id, .run_number, .status]
+                      | @tsv"
+            )
+
+            if [ "${BLOCKERS}" -eq 0 ]; then
+              echo "QA turn acquired for run #${CURRENT_RUN_NUMBER}."
+              exit 0
+            fi
+
+            echo "${BLOCKERS} older QA candidate(s) still ahead. Retrying in 15 seconds..."
+            sleep 15
+          done
+
+  # =============================================================
   # CD QA
   # Promote EXACTLY the same SHA image that passed DEV.
   # The GitHub Environment "qa" can require manual approval.
   # =============================================================
   deploy-qa:
-    needs: deploy-dev
+    needs:
+      - deploy-dev
+      - wait-qa-turn
     runs-on: ubuntu-latest
+
+    # Safety net: only one deployment may modify the shared QA
+    # Container App at a time. queue:max keeps pending candidates.
+    concurrency:
+      group: rover-shared-qa
+      queue: max
 
     if: >
       github.event_name != 'pull_request' &&
@@ -459,12 +748,161 @@ jobs:
 
       - name: QA deployment summary
         run: |
+          SHORT_SHA="${GITHUB_SHA:0:12}"
+          RELEASE_BRANCH="release/qa-${SHORT_SHA}"
+
           {
             echo "## Azure QA deployed"
             echo ""
             echo "- Image: \`${AZURE_IMAGE}\`"
+            echo "- QA-approved SHA: \`${GITHUB_SHA}\`"
             echo "- Container App: \`${AZURE_CONTAINER_APP_NAME}\`"
             echo "- URL: ${AZURE_QA_URL}"
             echo "- DEV → QA promotion: ✅"
+            echo ""
+            echo "### Next release step"
+            echo "1. The release-candidate job will create \`${RELEASE_BRANCH}\` from this exact QA-approved SHA."
+            echo "2. Open/merge a PR from \`${RELEASE_BRANCH}\` into \`main\`."
+            echo "3. Run the separate \`Rover PROD\` workflow from \`main\`."
+            echo "4. Deploy this exact QA-approved SHA: \`${GITHUB_SHA}\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # =============================================================
+  # RELEASE CANDIDATE
+  #
+  # This job DOES NOT deploy production.
+  #
+  # It creates an immutable release branch that points to the exact
+  # SHA that passed QA:
+  #
+  #   develop -> DEV -> QA -> release/qa-<short-sha>
+  #                              |
+  #                              v
+  #                     PR release/... -> main
+  #                              |
+  #                              v
+  #                         prod.yml
+  #                              |
+  #                              v
+  #                       Raspberry Pi 5
+  #
+  # This prevents newer, not-yet-approved commits in develop from
+  # accidentally reaching main/PROD.
+  # =============================================================
+  release-candidate:
+    name: Create QA-approved release branch
+    needs: deploy-qa
+    runs-on: ubuntu-latest
+
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/develop'
+
+    # Global workflow permission is contents:read. This one job needs
+    # write permission only to create the release branch.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout full repository history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Prepare QA-approved release
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          SHORT_SHA="${GITHUB_SHA:0:12}"
+          RELEASE_BRANCH="release/qa-${SHORT_SHA}"
+          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}"
+
+          # Confirm the exact approved commit exists locally.
+          git cat-file -e "${GITHUB_SHA}^{commit}"
+
+          {
+            echo "release_branch=${RELEASE_BRANCH}"
+            echo "short_sha=${SHORT_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "QA_APPROVED_SHA=${GITHUB_SHA}"
+            echo "QA_APPROVED_IMAGE=${IMAGE}"
+            echo "RELEASE_BRANCH=${RELEASE_BRANCH}"
+            echo "TARGET_BRANCH=main"
+          } > qa-approved-release.env
+
+          cat qa-approved-release.env
+
+      - name: Create release branch from exact QA-approved SHA
+        shell: bash
+        env:
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+        run: |
+          set -euo pipefail
+
+          # Idempotent behavior for workflow re-runs:
+          # - if the remote branch already points to this SHA, succeed;
+          # - if it points somewhere else, fail instead of rewriting it.
+          REMOTE_SHA="$(
+            git ls-remote \
+              --heads origin \
+              "refs/heads/${RELEASE_BRANCH}" \
+              | awk '{print $1}'
+          )"
+
+          if [ -n "${REMOTE_SHA}" ]; then
+            if [ "${REMOTE_SHA}" = "${GITHUB_SHA}" ]; then
+              echo "${RELEASE_BRANCH} already exists and points to ${GITHUB_SHA}."
+              exit 0
+            fi
+
+            echo "ERROR: ${RELEASE_BRANCH} already exists but points to ${REMOTE_SHA}."
+            echo "Refusing to overwrite an existing release branch."
+            exit 1
+          fi
+
+          git push origin \
+            "${GITHUB_SHA}:refs/heads/${RELEASE_BRANCH}"
+
+          echo "Created ${RELEASE_BRANCH} -> ${GITHUB_SHA}"
+
+      - name: Upload QA-approved release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-approved-${{ github.sha }}
+          path: qa-approved-release.env
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Release candidate summary
+        shell: bash
+        env:
+          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}"
+
+          {
+            echo "## QA-approved release candidate"
+            echo ""
+            echo "- Commit SHA: \`${GITHUB_SHA}\`"
+            echo "- Image: \`${IMAGE}\`"
+            echo "- Release branch: \`${RELEASE_BRANCH}\`"
+            echo "- Target branch: \`main\`"
+            echo "- Architectures: \`linux/amd64\`, \`linux/arm64\`"
+            echo "- QA: ✅"
+            echo ""
+            echo "### Production handoff"
+            echo "Open a PR:"
+            echo ""
+            echo "\`${RELEASE_BRANCH}\` → \`main\`"
+            echo ""
+            echo "After that PR is merged, run the \`Rover PROD\` workflow"
+            echo "from \`main\` using this exact SHA:"
+            echo ""
+            echo "\`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
