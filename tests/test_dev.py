@@ -9,7 +9,7 @@ import urllib.request
 # Local DEV:
 #   http://127.0.0.1:8000
 #
-# Azure DEV/QA can reuse the same tests:
+# Azure DEV/QA:
 #   TEST_BASE_URL=https://<container-app-fqdn> pytest -q tests/test_dev.py
 BASE_URL = os.getenv(
     "TEST_BASE_URL",
@@ -62,6 +62,31 @@ def reset():
     req(f"{SIM}/reset", "POST")
 
 
+def stop():
+    req(f"{API}/stop", "POST")
+
+
+def wait_for_state(predicate, timeout=2.0, interval=0.05):
+    """
+    Poll simulator state until predicate(state) is True.
+
+    This is more reliable than fixed time.sleep() calls,
+    especially on GitHub Actions / slower CI runners.
+    """
+    deadline = time.monotonic() + timeout
+    last_state = None
+
+    while time.monotonic() < deadline:
+        last_state = state()
+
+        if predicate(last_state):
+            return last_state
+
+        time.sleep(interval)
+
+    return last_state
+
+
 def test_services():
     # Everything is intentionally tested through nginx :8000.
     assert req(f"{BASE_URL}/health")[0] == 200
@@ -74,114 +99,146 @@ def test_forward_command_and_motion():
     reset()
     before = state()
 
-    req(
-        f"{API}/forward",
-        "POST",
-        {"speed": 0.30},
-    )
+    try:
+        req(
+            f"{API}/forward",
+            "POST",
+            {"speed": 0.30},
+        )
 
-    command_state = state()
-    close(command_state["left"], 0.30)
-    close(command_state["right"], 0.30)
+        command_state = state()
 
-    time.sleep(0.35)
+        close(command_state["left"], 0.30)
+        close(command_state["right"], 0.30)
 
-    after = state()
-    assert after["x"] > before["x"], (
-        before["x"],
-        after["x"],
-    )
+        after = wait_for_state(
+            lambda s: float(s["x"]) > float(before["x"]),
+            timeout=2.0,
+        )
 
-    req(f"{API}/stop", "POST")
+        assert after is not None
+        assert after["x"] > before["x"], {
+            "before": before["x"],
+            "after": after["x"],
+        }
+
+    finally:
+        stop()
 
 
 def test_left_turn():
     reset()
 
-    req(
-        f"{API}/left",
-        "POST",
-        {"speed": 0.20},
-    )
+    try:
+        req(
+            f"{API}/left",
+            "POST",
+            {"speed": 0.20},
+        )
 
-    command_state = state()
-    close(command_state["left"], 0.20)
-    close(command_state["right"], -0.20)
+        command_state = state()
 
-    time.sleep(0.25)
+        close(command_state["left"], 0.20)
+        close(command_state["right"], -0.20)
 
-    after = state()
-    assert after["heading_degrees"] > 0, after["heading_degrees"]
+        after = wait_for_state(
+            lambda s: float(s["heading_degrees"]) > 0,
+            timeout=2.0,
+        )
 
-    req(f"{API}/stop", "POST")
+        assert after is not None
+        assert after["heading_degrees"] > 0, after
+
+    finally:
+        stop()
 
 
 def test_right_turn():
     reset()
 
-    req(
-        f"{API}/right",
-        "POST",
-        {"speed": 0.20},
-    )
+    try:
+        req(
+            f"{API}/right",
+            "POST",
+            {"speed": 0.20},
+        )
 
-    command_state = state()
-    close(command_state["left"], -0.20)
-    close(command_state["right"], 0.20)
+        command_state = state()
 
-    time.sleep(0.25)
+        close(command_state["left"], -0.20)
+        close(command_state["right"], 0.20)
 
-    after = state()
-    assert after["heading_degrees"] < 0, after["heading_degrees"]
+        after = wait_for_state(
+            lambda s: float(s["heading_degrees"]) < 0,
+            timeout=2.0,
+        )
 
-    req(f"{API}/stop", "POST")
+        assert after is not None
+        assert after["heading_degrees"] < 0, after
+
+    finally:
+        stop()
 
 
 def test_stop():
-    req(f"{API}/stop", "POST")
+    stop()
 
-    current = state()
+    current = wait_for_state(
+        lambda s: (
+            math.isclose(float(s["left"]), 0.0, abs_tol=1e-6)
+            and math.isclose(float(s["right"]), 0.0, abs_tol=1e-6)
+        ),
+        timeout=1.0,
+    )
+
+    assert current is not None
     close(current["left"], 0)
     close(current["right"], 0)
 
 
 def test_battery_scenario_and_endpoint():
-    req(
-        f"{SIM}/scenario",
-        "POST",
-        {"voltage": 10.4},
-    )
+    try:
+        req(
+            f"{SIM}/scenario",
+            "POST",
+            {"voltage": 10.4},
+        )
 
-    _, body = req(f"{API}/battery")
+        _, body = req(f"{API}/battery")
 
-    assert body["ok"] is True
-    close(body["voltage"], 10.4, 0.02)
+        assert body["ok"] is True
+        close(body["voltage"], 10.4, 0.02)
 
-    req(
-        f"{SIM}/scenario",
-        "POST",
-        {"voltage": 12.2},
-    )
+    finally:
+        # Restore normal battery level even if the assertion fails.
+        req(
+            f"{SIM}/scenario",
+            "POST",
+            {"voltage": 12.2},
+        )
 
 
 def test_simulated_latency():
-    req(
-        f"{SIM}/scenario",
-        "POST",
-        {"latency_ms": 250},
-    )
+    try:
+        req(
+            f"{SIM}/scenario",
+            "POST",
+            {"latency_ms": 250},
+        )
 
-    start = time.monotonic()
-    req(f"{API}/status")
-    elapsed = time.monotonic() - start
+        start = time.monotonic()
+        req(f"{API}/status")
+        elapsed = time.monotonic() - start
 
-    assert elapsed >= 0.20, elapsed
+        assert elapsed >= 0.20, elapsed
 
-    req(
-        f"{SIM}/scenario",
-        "POST",
-        {"latency_ms": 0},
-    )
+    finally:
+        # Never leave latency enabled for the next test.
+        req(
+            f"{SIM}/scenario",
+            "POST",
+            {"latency_ms": 0},
+        )
 
 
 def test_stream():
@@ -190,12 +247,17 @@ def test_stream():
         timeout=8,
     )
 
-    assert (
-        "multipart/x-mixed-replace"
-        in response.headers.get("Content-Type", "")
-    )
+    try:
+        content_type = response.headers.get("Content-Type", "")
 
-    chunk = response.read(4096)
-    assert b"--FRAME" in chunk or b"\xff\xd8" in chunk
+        assert "multipart/x-mixed-replace" in content_type
 
-    response.close()
+        chunk = response.read(4096)
+
+        assert (
+            b"--FRAME" in chunk
+            or b"\xff\xd8" in chunk
+        )
+
+    finally:
+        response.close()
