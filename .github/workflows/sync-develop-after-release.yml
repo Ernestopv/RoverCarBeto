@@ -1,0 +1,75 @@
+name: Sync develop after release
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+
+permissions:
+  contents: write
+
+jobs:
+  sync-develop:
+    name: Sync main back to develop
+    if: >
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release/qa-')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync develop safely
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin main develop
+
+          MAIN_SHA="$(git rev-parse origin/main)"
+          DEVELOP_SHA="$(git rev-parse origin/develop)"
+          RELEASE_SHA="${{ github.event.pull_request.head.sha }}"
+
+          echo "main:    ${MAIN_SHA}"
+          echo "develop: ${DEVELOP_SHA}"
+          echo "release: ${RELEASE_SHA}"
+
+          # The QA-approved release commit must be contained in main.
+          if ! git merge-base --is-ancestor "${RELEASE_SHA}" "${MAIN_SHA}"; then
+            echo "ERROR: release SHA is not contained in main."
+            echo "Use 'Create a merge commit' for release PRs; do not squash/rebase them."
+            exit 1
+          fi
+
+          if [ "${MAIN_SHA}" = "${DEVELOP_SHA}" ]; then
+            echo "develop is already identical to main."
+            exit 0
+          fi
+
+          # Best case: develop has not advanced since the release.
+          # Fast-forward it so both branches point to exactly the same commit.
+          if git merge-base --is-ancestor "${DEVELOP_SHA}" "${MAIN_SHA}"; then
+            echo "Fast-forwarding develop to main..."
+            git push origin "${MAIN_SHA}:refs/heads/develop"
+            echo "develop now points to ${MAIN_SHA}"
+            exit 0
+          fi
+
+          # develop contains newer work. Never delete it with a force push.
+          # Merge main back into develop so the release history is incorporated.
+          echo "develop contains newer commits; preserving them and merging main back."
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git switch -C develop origin/develop
+          git merge --no-edit origin/main
+          git push origin HEAD:develop
+
+          echo "main was merged back into develop without overwriting newer work."
