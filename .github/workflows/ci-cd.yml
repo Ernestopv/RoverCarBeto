@@ -224,18 +224,40 @@ jobs:
         if: github.event_name != 'pull_request'
         shell: bash
         run: |
-          docker buildx imagetools inspect "${IMAGE_NAME}:${GITHUB_SHA}"
+          set -euo pipefail
+
+          IMAGE="${IMAGE_NAME}:${GITHUB_SHA}"
+
+          docker buildx imagetools inspect "${IMAGE}"
 
           RAW="$(
             docker buildx imagetools inspect \
               --raw \
-              "${IMAGE_NAME}:${GITHUB_SHA}"
+              "${IMAGE}"
           )"
 
-          echo "${RAW}" | grep -q '"architecture":"amd64"'
-          echo "${RAW}" | grep -q '"architecture":"arm64"'
+          # Validate only real runtime platforms.
+          # Buildx may also publish an attestation manifest as unknown/unknown;
+          # that is expected and must not make this check fail.
+          echo "${RAW}" | jq -e '
+            .manifests
+            | any(
+                .platform.os == "linux"
+                and .platform.architecture == "amd64"
+              )
+          ' >/dev/null
 
-          echo "Verified linux/amd64 + linux/arm64"
+          echo "${RAW}" | jq -e '
+            .manifests
+            | any(
+                .platform.os == "linux"
+                and .platform.architecture == "arm64"
+              )
+          ' >/dev/null
+
+          echo "Verified multi-arch image:"
+          echo "  - linux/amd64"
+          echo "  - linux/arm64"
 
       # ---------------------------------------------------------
       # FLOATING :dev ALIAS
