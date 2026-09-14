@@ -8,7 +8,7 @@ on:
 
   pull_request:
     branches:
-      - develop     
+      - develop
 
   workflow_dispatch:
 
@@ -715,6 +715,12 @@ jobs:
     name: Build ARM64 and create release
     needs: deploy-qa
     runs-on: ubuntu-latest
+
+    # Manual approval gate.
+    # Configure required reviewers for this environment in:
+    # GitHub -> Settings -> Environments -> release
+    environment:
+      name: prod
 
     if: >
       github.event_name != 'pull_request' &&
