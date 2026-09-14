@@ -4,6 +4,10 @@ ARG TARGETARCH
 
 WORKDIR /app
 
+# ------------------------------------------------------------
+# Base runtime
+# Used by all environments: DEV / QA / PROD
+# ------------------------------------------------------------
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
@@ -13,30 +17,44 @@ RUN apt-get update \
         gnupg \
         wget \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir flask requests
+    && pip install --no-cache-dir \
+        flask \
+        requests
 
 
 # ------------------------------------------------------------
-# Raspberry Pi camera runtime
-# Only installed in the ARM64 image used by Raspberry Pi PROD.
-# DEV / QA amd64 skip this section.
+# Raspberry Pi AI Camera runtime
+#
+# Installed ONLY in linux/arm64 image for Raspberry Pi PROD.
+#
+# DEV / QA:
+#   CAMERA_SOURCE=simulator
+#   Uses FFmpeg only.
+#
+# PROD:
+#   CAMERA_SOURCE=imx500
+#   Uses rpicam-vid + IMX500 post-processing stages.
 # ------------------------------------------------------------
 RUN if [ "${TARGETARCH}" = "arm64" ]; then \
-        echo "Installing Raspberry Pi camera runtime for ARM64..." && \
+        echo "Installing Raspberry Pi AI Camera runtime for ARM64..." && \
         mkdir -p /usr/share/keyrings && \
         wget -qO- https://archive.raspberrypi.com/debian/raspberrypi.gpg.key \
           | gpg --dearmor -o /usr/share/keyrings/raspberrypi-archive-keyring.gpg && \
-        echo "deb [signed-by=/usr/share/keyrings/raspberrypi-archive-keyring.gpg] https://archive.raspberrypi.com/debian/ bookworm main" \
+        echo "deb [arch=arm64 signed-by=/usr/share/keyrings/raspberrypi-archive-keyring.gpg] https://archive.raspberrypi.com/debian/ bookworm main" \
           > /etc/apt/sources.list.d/raspberrypi.list && \
         apt-get update && \
         apt-get install -y --no-install-recommends \
-          rpicam-apps-lite && \
+          rpicam-apps-lite \
+          rpicam-apps-imx500-postprocess && \
         rm -rf /var/lib/apt/lists/*; \
     else \
-        echo "Skipping Raspberry Pi camera runtime for ${TARGETARCH}"; \
+        echo "Skipping Raspberry Pi AI Camera runtime for ${TARGETARCH}"; \
     fi
 
 
+# ------------------------------------------------------------
+# Application
+# ------------------------------------------------------------
 COPY api.py ui.py index.html style.css /app/
 
 COPY simulator/ /app/simulator/
@@ -47,6 +65,15 @@ COPY entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh
 
-EXPOSE 5000 8000 8081
+
+# ------------------------------------------------------------
+# Ports
+#
+# 5000 -> Flask API
+# 8000 -> nginx public endpoint
+# 8001 -> internal UI, not normally exposed externally
+# 8081 -> rover simulator
+# ------------------------------------------------------------
+EXPOSE 5000 8000 8001 8081
 
 ENTRYPOINT ["/app/entrypoint.sh"]
