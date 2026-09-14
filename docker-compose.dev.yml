@@ -1,9 +1,38 @@
 services:
-  rover-simulator:
+  rover-car-beto:
     build:
-      context: ./simulator
-    container_name: rover-simulator-dev
+      context: .
+      dockerfile: Dockerfile
+
+    image: rover-car-beto:dev
+    restart: unless-stopped
+
     environment:
+      ENVIRONMENT: dev
+
+      # Simulator
+      SIMULATOR_ENABLED: "true"
+      SIM_PORT: 8081
+
+      # UI runs internally on 8001.
+      # nginx is the only public entry point on 8000.
+      UI_PORT: 8001
+
+      # Camera / Rover
+      CAMERA_SOURCE: simulator
+      API_BASE_URL: http://127.0.0.1:5000/api/rover
+      ROVER_IP: 127.0.0.1:8081
+
+      MODE: ${MODE:-pose}
+
+      CAMERA_WIDTH: ${CAMERA_WIDTH:-640}
+      CAMERA_HEIGHT: ${CAMERA_HEIGHT:-360}
+      CAMERA_FPS: ${CAMERA_FPS:-20}
+      JPEG_QUALITY: ${JPEG_QUALITY:-50}
+
+      LEFT_TRIM: ${LEFT_TRIM:-1.0}
+      RIGHT_TRIM: ${RIGHT_TRIM:-1.0}
+
       SIM_BATTERY_VOLTAGE: ${SIM_BATTERY_VOLTAGE:-12.20}
       SIM_UPDATE_HZ: ${SIM_UPDATE_HZ:-30}
       SIM_WORLD_WIDTH: ${SIM_WORLD_WIDTH:-6.0}
@@ -11,59 +40,14 @@ services:
       SIM_MAX_LINEAR_SPEED: ${SIM_MAX_LINEAR_SPEED:-1.0}
       SIM_WHEEL_BASE: ${SIM_WHEEL_BASE:-0.32}
       SIM_COMMAND_TIMEOUT: ${SIM_COMMAND_TIMEOUT:-1.5}
-    ports:
-      - "8081:80"
-    healthcheck:
-      test:
-        - CMD
-        - python3
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1/health', timeout=2)"
-      interval: 2s
-      timeout: 2s
-      retries: 15
 
-  rover-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    container_name: rover-api-dev
-    command: ["python3", "/app/api.py"]
-    depends_on:
-      rover-simulator:
-        condition: service_healthy
-    environment:
-      ROVER_IP: rover-simulator
-      LEFT_TRIM: ${LEFT_TRIM:-1.0}
-      RIGHT_TRIM: ${RIGHT_TRIM:-1.0}
-    ports:
-      - "5000:5000"
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5000/health"]
-      interval: 2s
-      timeout: 2s
-      retries: 15
-
-  rover-ui:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    container_name: rover-ui-dev
-    command: ["python3", "/app/ui.py"]
-    depends_on:
-      rover-api:
-        condition: service_healthy
-    environment:
-      MODE: ${MODE:-objects}
-      CAMERA_SOURCE: simulator
-      API_BASE_URL: http://rover-api:5000/api/rover
-      CAMERA_WIDTH: ${CAMERA_WIDTH:-640}
-      CAMERA_HEIGHT: ${CAMERA_HEIGHT:-360}
-      CAMERA_FPS: ${CAMERA_FPS:-20}
-      JPEG_QUALITY: ${JPEG_QUALITY:-50}
+    # nginx is the only port exposed outside the container.
     ports:
       - "8000:8000"
 
-networks:
-  default:
-    name: rover-dev
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+      start_period: 10s

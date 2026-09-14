@@ -1,0 +1,943 @@
+name: Rover CI/CD
+
+on:
+  push:
+    branches:
+      - develop
+      - "feature/**"
+
+  pull_request:
+    branches:
+      - develop
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+  id-token: write
+
+env:
+  AZURE_CONTAINER_APP_NAME: rover-car-beto-dev
+  AZURE_DEV_URL: https://rover-car-beto-dev.politemushroom-742c3fcd.spaincentral.azurecontainerapps.io
+
+jobs:
+  # =============================================================
+  # CI DEV
+  # Build, run locally with Docker Compose, test and publish GHCR.
+  # =============================================================
+  dev:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # ---------------------------------------------------------
+      # VALIDATE SOURCE
+      # ---------------------------------------------------------
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile api.py
+          python -m py_compile ui.py
+          python -m py_compile simulator/rover_simulator.py
+          python -m py_compile tests/test_dev.py
+
+      # ---------------------------------------------------------
+      # VALIDATE COMPOSE
+      # ---------------------------------------------------------
+      - name: Validate DEV compose
+        run: |
+          docker compose \
+            --env-file .env.dev.example \
+            -f docker-compose.dev.yml \
+            config >/dev/null
+
+      # ---------------------------------------------------------
+      # BUILD + START DEV IMAGE LOCALLY
+      # nginx is the only published port: 8000
+      # ---------------------------------------------------------
+      - name: Build and start DEV environment
+        run: |
+          docker compose \
+            --env-file .env.dev.example \
+            -f docker-compose.dev.yml \
+            up -d --build
+
+      # ---------------------------------------------------------
+      # WAIT FOR SERVICES THROUGH NGINX
+      # ---------------------------------------------------------
+      - name: Wait for DEV services
+        shell: bash
+        run: |
+          for i in {1..45}; do
+            HEALTH=0
+            UI=0
+            API=0
+            SIM=0
+
+            curl -fsS http://127.0.0.1:8000/health >/dev/null && HEALTH=1 || true
+            curl -fsS http://127.0.0.1:8000/ >/dev/null && UI=1 || true
+            curl -fsS http://127.0.0.1:8000/api/rover/status >/dev/null && API=1 || true
+            curl -fsS http://127.0.0.1:8000/simulator/health >/dev/null && SIM=1 || true
+
+            if [ "$HEALTH" = 1 ] && \
+               [ "$UI" = 1 ] && \
+               [ "$API" = 1 ] && \
+               [ "$SIM" = 1 ]; then
+              echo "All DEV services are ready through nginx"
+              exit 0
+            fi
+
+            echo "Waiting for DEV services... attempt $i/45"
+            echo "health=$HEALTH ui=$UI api=$API simulator=$SIM"
+            sleep 2
+          done
+
+          echo "DEV services did not become ready"
+
+          docker compose \
+            --env-file .env.dev.example \
+            -f docker-compose.dev.yml \
+            ps || true
+
+          docker compose \
+            --env-file .env.dev.example \
+            -f docker-compose.dev.yml \
+            logs || true
+
+          exit 1
+
+      # ---------------------------------------------------------
+      # TEST LOCALLY
+      # ---------------------------------------------------------
+      - name: Install pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: Run DEV tests
+        run: |
+          pytest -q tests/test_dev.py
+
+      # ---------------------------------------------------------
+      # PREPARE GHCR IMAGE NAME
+      # PRs test only; push/manual runs may publish.
+      # ---------------------------------------------------------
+      - name: Prepare GHCR image name
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "IMAGE_NAME=ghcr.io/${OWNER}/rover-car-beto" >> "$GITHUB_ENV"
+
+          echo "Image will be:"
+          echo "ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}"
+
+      # ---------------------------------------------------------
+      # LOGIN GHCR
+      # ---------------------------------------------------------
+      - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---------------------------------------------------------
+      # PUBLISH TESTED AMD64 IMAGE ONLY
+      #
+      # DEV and QA run on Azure and use the AMD64 image that was
+      # already built and tested locally in this job.
+      #
+      # ARM64 is intentionally NOT built here. It is built only
+      # after QA approval, inside release-candidate.
+      #
+      # Published immutable QA candidate:
+      #   ghcr.io/<owner>/rover-car-beto:<GITHUB_SHA>-amd64
+      # ---------------------------------------------------------
+      - name: Push tested AMD64 image
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          docker image inspect rover-car-beto:dev
+
+          docker tag \
+            rover-car-beto:dev \
+            "${IMAGE_NAME}:${GITHUB_SHA}-amd64"
+
+          docker push "${IMAGE_NAME}:${GITHUB_SHA}-amd64"
+
+          echo "Published tested AMD64 image:"
+          echo "${IMAGE_NAME}:${GITHUB_SHA}-amd64"
+
+      # ---------------------------------------------------------
+      # FLOATING :dev ALIAS
+      # Only develop updates this convenience tag.
+      # It is AMD64-only and is NOT used for PROD promotion.
+      # ---------------------------------------------------------
+      - name: Publish DEV tag
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+        shell: bash
+        run: |
+          docker tag \
+            rover-car-beto:dev \
+            "${IMAGE_NAME}:dev"
+
+          docker push "${IMAGE_NAME}:dev"
+
+          echo "Updated:"
+          echo "${IMAGE_NAME}:dev -> ${IMAGE_NAME}:${GITHUB_SHA}-amd64"
+
+      # ---------------------------------------------------------
+      # DEBUG
+      # ---------------------------------------------------------
+      - name: Show Docker status and logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            --env-file .env.dev.example \
+            -f docker-compose.dev.yml \
+            ps || true
+
+          docker compose \
+            --env-file .env.dev.example \
+            -f docker-compose.dev.yml \
+            logs || true
+
+      # ---------------------------------------------------------
+      # CLEANUP LOCAL DEV
+      # ---------------------------------------------------------
+      - name: Stop DEV environment
+        if: always()
+        run: |
+          docker compose \
+            --env-file .env.dev.example \
+            -f docker-compose.dev.yml \
+            down -v
+
+  # =============================================================
+  # DEV FIFO GATE
+  #
+  # CI jobs may run in parallel, but the shared Azure DEV environment
+  # must be used in commit/run order:
+  #
+  #   A -> DEV deploy/tests -> B -> DEV deploy/tests -> C ...
+  #
+  # A newer run waits until every older develop run has either:
+  #   * completed its deploy-dev job, or
+  #   * completed without reaching deploy-dev.
+  #
+  # QA does NOT block the next DEV run. Once A has completed deploy-dev,
+  # B may use DEV even if A is waiting for QA approval.
+  # =============================================================
+  wait-dev-turn:
+    name: Wait for DEV turn
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/develop'
+
+    permissions:
+      actions: read
+      contents: read
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      CURRENT_RUN_ID: ${{ github.run_id }}
+      CURRENT_RUN_NUMBER: ${{ github.run_number }}
+
+    steps:
+      - name: Wait for older DEV deployments
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WORKFLOW_ID="$(
+            gh api \
+              "repos/${REPOSITORY}/actions/runs/${CURRENT_RUN_ID}" \
+              --jq '.workflow_id'
+          )"
+
+          echo "Workflow ID: ${WORKFLOW_ID}"
+          echo "Current run number: ${CURRENT_RUN_NUMBER}"
+          echo "Waiting only for older develop runs to finish their DEV stage."
+
+          while true; do
+            BLOCKERS=0
+
+            while IFS=$'\t' read -r RUN_ID RUN_NUMBER RUN_STATUS; do
+              [ -z "${RUN_ID:-}" ] && continue
+
+              # A fully completed older workflow cannot still be using DEV.
+              if [ "${RUN_STATUS}" = "completed" ]; then
+                continue
+              fi
+
+              DEV_JOB_STATUS="$(
+                gh api \
+                  "repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+                  --jq '[.jobs[] | select(.name == "deploy-dev")][0].status // ""'
+              )"
+
+              # The older run has already released the shared DEV environment.
+              if [ "${DEV_JOB_STATUS}" = "completed" ]; then
+                continue
+              fi
+
+              BLOCKERS=$((BLOCKERS + 1))
+
+              if [ -n "${DEV_JOB_STATUS}" ]; then
+                echo "Blocked by run #${RUN_NUMBER} (${RUN_ID}): deploy-dev=${DEV_JOB_STATUS}"
+              else
+                echo "Blocked by run #${RUN_NUMBER} (${RUN_ID}): DEV stage has not started yet"
+              fi
+            done < <(
+              gh api --paginate \
+                "repos/${REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?branch=develop&per_page=100" \
+                --jq ".workflow_runs[]
+                      | select(.run_number < (${CURRENT_RUN_NUMBER} | tonumber))
+                      | select(.event == \"push\" or .event == \"workflow_dispatch\")
+                      | [.id, .run_number, .status]
+                      | @tsv"
+            )
+
+            if [ "${BLOCKERS}" -eq 0 ]; then
+              echo "DEV turn acquired for run #${CURRENT_RUN_NUMBER}."
+              exit 0
+            fi
+
+            echo "${BLOCKERS} older DEV run(s) still ahead. Retrying in 15 seconds..."
+            sleep 15
+          done
+
+  # =============================================================
+  # CD DEV
+  # Deploy the exact SHA image to Azure Container Apps.
+  #
+  # Feature branches and PRs DO NOT deploy to the shared Azure DEV
+  # environment. Only develop (or a manual run from develop) does.
+  # =============================================================
+  deploy-dev:
+    needs:
+      - dev
+      - wait-dev-turn
+    runs-on: ubuntu-latest
+
+    # Safety net: even if two gates were released at nearly the same instant,
+    # GitHub queues the shared DEV deployment instead of cancelling it.
+    concurrency:
+      group: rover-shared-dev
+      queue: max
+
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/develop'
+
+    environment:
+      name: dev
+      url: ${{ env.AZURE_DEV_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # OIDC: no long-lived Azure password is stored in GitHub.
+      - name: Login to Azure
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Container Apps CLI extension
+        run: |
+          az extension add \
+            --name containerapp \
+            --upgrade \
+            --yes
+
+      - name: Prepare Azure image name
+        shell: bash
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}-amd64"
+
+          echo "AZURE_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Deploying ${IMAGE}"
+
+      - name: Deploy image to Azure Container Apps DEV
+        run: |
+          az containerapp update \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "${AZURE_IMAGE}" \
+            --output none
+
+      - name: Show deployed image
+        run: |
+          DEPLOYED_IMAGE="$(
+            az containerapp show \
+              --name "${AZURE_CONTAINER_APP_NAME}" \
+              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+              --query "properties.template.containers[0].image" \
+              --output tsv
+          )"
+
+          echo "Expected: ${AZURE_IMAGE}"
+          echo "Deployed: ${DEPLOYED_IMAGE}"
+
+          test "${DEPLOYED_IMAGE}" = "${AZURE_IMAGE}"
+
+      # ---------------------------------------------------------
+      # WAIT FOR THE NEW AZURE REVISION
+      # ---------------------------------------------------------
+      - name: Wait for Azure DEV
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            HEALTH=0
+            UI=0
+            API=0
+            SIM=0
+
+            curl -fsS "${AZURE_DEV_URL}/health" >/dev/null && HEALTH=1 || true
+            curl -fsS "${AZURE_DEV_URL}/" >/dev/null && UI=1 || true
+            curl -fsS "${AZURE_DEV_URL}/api/rover/status" >/dev/null && API=1 || true
+            curl -fsS "${AZURE_DEV_URL}/simulator/health" >/dev/null && SIM=1 || true
+
+            if [ "$HEALTH" = 1 ] && \
+               [ "$UI" = 1 ] && \
+               [ "$API" = 1 ] && \
+               [ "$SIM" = 1 ]; then
+              echo "Azure DEV is ready"
+              exit 0
+            fi
+
+            echo "Waiting for Azure DEV revision... attempt $i/60"
+            echo "health=$HEALTH ui=$UI api=$API simulator=$SIM"
+            sleep 5
+          done
+
+          echo "Azure DEV did not become ready"
+
+          az containerapp revision list \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --output table || true
+
+          exit 1
+
+      # ---------------------------------------------------------
+      # RUN THE SAME INTEGRATION TESTS AGAINST AZURE
+      # ---------------------------------------------------------
+      - name: Install pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: Run integration tests against Azure DEV
+        env:
+          TEST_BASE_URL: ${{ env.AZURE_DEV_URL }}
+        run: |
+          pytest -q tests/test_dev.py
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "## Azure DEV deployed"
+            echo ""
+            echo "- Image: \`${AZURE_IMAGE}\`"
+            echo "- Container App: \`${AZURE_CONTAINER_APP_NAME}\`"
+            echo "- URL: ${AZURE_DEV_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # =============================================================
+  # QA FIFO GATE
+  #
+  # Cada commit que termina DEV entra en la cola de QA en orden.
+  # Solo el commit más antiguo pendiente llega al Environment "qa"
+  # y solicita aprobación.
+  #
+  # Ejemplo:
+  #   A -> QA approval -> deploy/test QA
+  #   B -> espera a A
+  #   C -> espera a B
+  #   D -> espera a C
+  #
+  # Si A es rechazado o falla, su deploy-qa termina y B puede continuar.
+  # =============================================================
+  wait-qa-turn:
+    name: Wait for QA turn
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440
+
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/develop'
+
+    permissions:
+      actions: read
+      contents: read
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      CURRENT_RUN_ID: ${{ github.run_id }}
+      CURRENT_RUN_NUMBER: ${{ github.run_number }}
+
+    steps:
+      - name: Wait for older QA candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WORKFLOW_ID="$(
+            gh api \
+              "repos/${REPOSITORY}/actions/runs/${CURRENT_RUN_ID}" \
+              --jq '.workflow_id'
+          )"
+
+          echo "Workflow ID: ${WORKFLOW_ID}"
+          echo "Current run number: ${CURRENT_RUN_NUMBER}"
+          echo "Waiting for older develop runs to finish their QA stage."
+
+          while true; do
+            BLOCKERS=0
+
+            while IFS=$'\t' read -r RUN_ID RUN_NUMBER RUN_STATUS; do
+              [ -z "${RUN_ID:-}" ] && continue
+
+              # A completed older workflow can no longer occupy QA.
+              if [ "${RUN_STATUS}" = "completed" ]; then
+                continue
+              fi
+
+              QA_JOB_STATUS="$(
+                gh api \
+                  "repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+                  --jq '[.jobs[] | select(.name == "deploy-qa")][0].status // ""'
+              )"
+
+              # Once the older QA job is complete (success, failure or rejection),
+              # this run no longer blocks the next candidate.
+              if [ "${QA_JOB_STATUS}" = "completed" ]; then
+                continue
+              fi
+
+              BLOCKERS=$((BLOCKERS + 1))
+
+              if [ -n "${QA_JOB_STATUS}" ]; then
+                echo "Blocked by run #${RUN_NUMBER} (${RUN_ID}): deploy-qa=${QA_JOB_STATUS}"
+              else
+                echo "Blocked by run #${RUN_NUMBER} (${RUN_ID}): QA stage has not started yet"
+              fi
+            done < <(
+              gh api --paginate \
+                "repos/${REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?branch=develop&per_page=100" \
+                --jq ".workflow_runs[]
+                      | select(.run_number < (${CURRENT_RUN_NUMBER} | tonumber))
+                      | select(.event == \"push\" or .event == \"workflow_dispatch\")
+                      | [.id, .run_number, .status]
+                      | @tsv"
+            )
+
+            if [ "${BLOCKERS}" -eq 0 ]; then
+              echo "QA turn acquired for run #${CURRENT_RUN_NUMBER}."
+              exit 0
+            fi
+
+            echo "${BLOCKERS} older QA candidate(s) still ahead. Retrying in 15 seconds..."
+            sleep 15
+          done
+
+  # =============================================================
+  # CD QA
+  # Promote EXACTLY the same SHA image that passed DEV.
+  # The GitHub Environment "qa" can require manual approval.
+  # =============================================================
+  deploy-qa:
+    needs:
+      - deploy-dev
+      - wait-qa-turn
+    runs-on: ubuntu-latest
+
+    # Safety net: only one deployment may modify the shared QA
+    # Container App at a time. queue:max keeps pending candidates.
+    concurrency:
+      group: rover-shared-qa
+      queue: max
+
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/develop'
+
+    environment:
+      name: qa
+      url: ${{ vars.AZURE_QA_URL }}
+
+    env:
+      AZURE_CONTAINER_APP_NAME: rover-car-beto-qa
+      AZURE_QA_URL: ${{ vars.AZURE_QA_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Login to Azure
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Container Apps CLI extension
+        run: |
+          az extension add \
+            --name containerapp \
+            --upgrade \
+            --yes
+
+      - name: Prepare QA image name
+        shell: bash
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}-amd64"
+
+          echo "AZURE_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Promoting DEV image to QA:"
+          echo "${IMAGE}"
+
+      - name: Deploy image to Azure Container Apps QA
+        run: |
+          az containerapp update \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "${AZURE_IMAGE}" \
+            --output none
+
+      - name: Verify deployed QA image
+        shell: bash
+        run: |
+          DEPLOYED_IMAGE="$(
+            az containerapp show \
+              --name "${AZURE_CONTAINER_APP_NAME}" \
+              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+              --query "properties.template.containers[0].image" \
+              --output tsv
+          )"
+
+          echo "Expected: ${AZURE_IMAGE}"
+          echo "Deployed: ${DEPLOYED_IMAGE}"
+          test "${DEPLOYED_IMAGE}" = "${AZURE_IMAGE}"
+
+      - name: Wait for Azure QA
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            HEALTH=0
+            UI=0
+            API=0
+            SIM=0
+
+            curl -fsS "${AZURE_QA_URL}/health" >/dev/null && HEALTH=1 || true
+            curl -fsS "${AZURE_QA_URL}/" >/dev/null && UI=1 || true
+            curl -fsS "${AZURE_QA_URL}/api/rover/status" >/dev/null && API=1 || true
+            curl -fsS "${AZURE_QA_URL}/simulator/health" >/dev/null && SIM=1 || true
+
+            if [ "$HEALTH" = 1 ] && \
+               [ "$UI" = 1 ] && \
+               [ "$API" = 1 ] && \
+               [ "$SIM" = 1 ]; then
+              echo "Azure QA is ready"
+              exit 0
+            fi
+
+            echo "Waiting for Azure QA revision... attempt $i/60"
+            echo "health=$HEALTH ui=$UI api=$API simulator=$SIM"
+            sleep 5
+          done
+
+          echo "Azure QA did not become ready"
+
+          az containerapp revision list \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --output table || true
+
+          exit 1
+
+      - name: Install pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: Run integration tests against Azure QA
+        env:
+          TEST_BASE_URL: ${{ vars.AZURE_QA_URL }}
+        run: |
+          pytest -q tests/test_dev.py
+
+      - name: QA deployment summary
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:12}"
+          RELEASE_BRANCH="release/qa-${SHORT_SHA}"
+
+          {
+            echo "## Azure QA deployed"
+            echo ""
+            echo "- Image: \`${AZURE_IMAGE}\`"
+            echo "- QA-approved SHA: \`${GITHUB_SHA}\`"
+            echo "- QA-tested image: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rover-car-beto:${GITHUB_SHA}-amd64\`"
+            echo "- Container App: \`${AZURE_CONTAINER_APP_NAME}\`"
+            echo "- URL: ${AZURE_QA_URL}"
+            echo "- DEV → QA promotion: ✅"
+            echo ""
+            echo "### Next release step"
+            echo "1. The release-candidate job will build ARM64, create the final multi-arch tag, and create \`${RELEASE_BRANCH}\` from this exact QA-approved SHA."
+            echo "2. Open/merge a PR from \`${RELEASE_BRANCH}\` into \`main\`."
+            echo "3. Run the separate \`Rover PROD\` workflow from \`main\`."
+            echo "4. Deploy this exact QA-approved SHA: \`${GITHUB_SHA}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # =============================================================
+  # RELEASE CANDIDATE
+  #
+  # Runs only AFTER QA has approved and tested the AMD64 candidate.
+  #
+  # It performs the expensive ARM64 work only once for a real release:
+  #
+  #   QA-approved <SHA>-amd64
+  #             +
+  #      build <SHA>-arm64
+  #             |
+  #             v
+  #      final multi-arch <SHA>
+  #       ├─ linux/amd64
+  #       └─ linux/arm64
+  #             |
+  #             v
+  #   release/qa-<short-sha>
+  #             |
+  #             v
+  #          PR -> main
+  #             |
+  #             v
+  #           PROD
+  # =============================================================
+  release-candidate:
+    name: Build ARM64 and create release candidate
+    needs: deploy-qa
+    runs-on: ubuntu-latest
+
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/develop'
+
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout full repository history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Prepare release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          SHORT_SHA="${GITHUB_SHA:0:12}"
+          RELEASE_BRANCH="release/qa-${SHORT_SHA}"
+          IMAGE_NAME="ghcr.io/${OWNER}/rover-car-beto"
+          AMD64_IMAGE="${IMAGE_NAME}:${GITHUB_SHA}-amd64"
+          ARM64_IMAGE="${IMAGE_NAME}:${GITHUB_SHA}-arm64"
+          RELEASE_IMAGE="${IMAGE_NAME}:${GITHUB_SHA}"
+
+          {
+            echo "IMAGE_NAME=${IMAGE_NAME}"
+            echo "AMD64_IMAGE=${AMD64_IMAGE}"
+            echo "ARM64_IMAGE=${ARM64_IMAGE}"
+            echo "RELEASE_IMAGE=${RELEASE_IMAGE}"
+            echo "RELEASE_BRANCH=${RELEASE_BRANCH}"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "release_branch=${RELEASE_BRANCH}"
+            echo "short_sha=${SHORT_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Confirm we are extending the exact AMD64 image that passed QA.
+      - name: Verify QA-approved AMD64 image exists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools inspect "${AMD64_IMAGE}"
+
+          echo "QA-approved AMD64 image found:"
+          echo "${AMD64_IMAGE}"
+
+      # ARM64 is expensive under QEMU, so do it only after QA approval.
+      - name: Set up QEMU for ARM64
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push ARM64 release image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file Dockerfile \
+            --tag "${ARM64_IMAGE}" \
+            --cache-from type=gha,scope=rover-arm64 \
+            --cache-to type=gha,mode=max,scope=rover-arm64 \
+            --push \
+            .
+
+          echo "Published ARM64 release image:"
+          echo "${ARM64_IMAGE}"
+
+      - name: Create final multi-arch release image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools create \
+            --tag "${RELEASE_IMAGE}" \
+            "${AMD64_IMAGE}" \
+            "${ARM64_IMAGE}"
+
+          echo "Created final release image:"
+          echo "${RELEASE_IMAGE}"
+
+      - name: Verify final multi-arch release image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools inspect "${RELEASE_IMAGE}"
+
+          RAW="$(
+            docker buildx imagetools inspect \
+              --raw \
+              "${RELEASE_IMAGE}"
+          )"
+
+          echo "${RAW}" | jq -e '
+            .manifests
+            | any(
+                .platform.os == "linux"
+                and .platform.architecture == "amd64"
+              )
+          ' >/dev/null
+
+          echo "${RAW}" | jq -e '
+            .manifests
+            | any(
+                .platform.os == "linux"
+                and .platform.architecture == "arm64"
+              )
+          ' >/dev/null
+
+          echo "Verified:"
+          echo "  - linux/amd64"
+          echo "  - linux/arm64"
+
+      - name: Create release metadata file
+        shell: bash
+        run: |
+          {
+            echo "QA_APPROVED_SHA=${GITHUB_SHA}"
+            echo "QA_TESTED_IMAGE=${AMD64_IMAGE}"
+            echo "PROD_RELEASE_IMAGE=${RELEASE_IMAGE}"
+            echo "RELEASE_BRANCH=${RELEASE_BRANCH}"
+            echo "TARGET_BRANCH=main"
+          } > qa-approved-release.env
+
+          cat qa-approved-release.env
+
+      - name: Create release branch from exact QA-approved SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git cat-file -e "${GITHUB_SHA}^{commit}"
+
+          REMOTE_SHA="$(
+            git ls-remote \
+              --heads origin \
+              "refs/heads/${RELEASE_BRANCH}" \
+              | awk '{print $1}'
+          )"
+
+          if [ -n "${REMOTE_SHA}" ]; then
+            if [ "${REMOTE_SHA}" = "${GITHUB_SHA}" ]; then
+              echo "${RELEASE_BRANCH} already exists and points to ${GITHUB_SHA}."
+            else
+              echo "ERROR: ${RELEASE_BRANCH} exists but points to ${REMOTE_SHA}."
+              echo "Refusing to overwrite an existing release branch."
+              exit 1
+            fi
+          else
+            git push origin \
+              "${GITHUB_SHA}:refs/heads/${RELEASE_BRANCH}"
+
+            echo "Created ${RELEASE_BRANCH} -> ${GITHUB_SHA}"
+          fi
+
+      - name: Upload QA-approved release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-approved-${{ github.sha }}
+          path: qa-approved-release.env
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Release candidate summary
+        shell: bash
+        run: |
+          {
+            echo "## QA-approved release candidate"
+            echo ""
+            echo "- Commit SHA: \`${GITHUB_SHA}\`"
+            echo "- QA-tested AMD64: \`${AMD64_IMAGE}\`"
+            echo "- Final multi-arch image: \`${RELEASE_IMAGE}\`"
+            echo "- Release branch: \`${RELEASE_BRANCH}\`"
+            echo "- Target branch: \`main\`"
+            echo "- linux/amd64: ✅"
+            echo "- linux/arm64: ✅"
+            echo ""
+            echo "### Production handoff"
+            echo "Open a PR:"
+            echo ""
+            echo "\`${RELEASE_BRANCH}\` → \`main\`"
+            echo ""
+            echo "After merge, run \`Rover PROD\` from \`main\` using:"
+            echo ""
+            echo "\`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

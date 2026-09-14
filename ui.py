@@ -19,7 +19,20 @@ WIDTH = int(os.getenv("CAMERA_WIDTH", "640"))
 HEIGHT = int(os.getenv("CAMERA_HEIGHT", "480"))
 FPS = int(os.getenv("CAMERA_FPS", "30"))
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "55"))
-PORT = int(os.getenv("UI_PORT", "8000"))
+PORT = int(os.getenv("UI_PORT", "8001"))
+
+# APPLICATION ENVIRONMENT
+#   dev  -> development environment with simulators
+#   qa   -> QA validation environment
+#   prod -> Raspberry Pi / production
+ENVIRONMENT = os.getenv("ENVIRONMENT", "prod").strip().lower()
+
+if ENVIRONMENT not in ("dev", "qa", "prod"):
+    print(
+        f"\nERROR: Invalid ENVIRONMENT: {ENVIRONMENT}\n"
+        "Available values: dev, qa, prod\n"
+    )
+    sys.exit(1)
 
 # CAMERA SOURCE
 #   imx500     -> Raspberry Pi AI Camera
@@ -34,6 +47,8 @@ if CAMERA_SOURCE not in ("imx500", "simulator"):
     sys.exit(1)
 
 # CONNECTION TO API.PY (Flask backend on port 5000)
+# This URL is used server-side by ui.py, so keep it as an absolute localhost URL.
+# The browser calls /api/rover/* on the UI, and this process proxies those calls to api.py.
 API_BASE_URL = (
     os.getenv("API_BASE_URL")
     or os.getenv("ROVER_API_URL")
@@ -84,8 +99,16 @@ description = (
     else "PoseNet - Human Pose Estimation"
 )
 
-if CAMERA_SOURCE == "simulator":
+if ENVIRONMENT == "dev":
     description += " [DEV simulator]"
+elif ENVIRONMENT == "qa":
+    description += " [QA environment]"
+elif ENVIRONMENT == "prod":
+    description += ""
+
+# Add camera source detail only when useful.
+if CAMERA_SOURCE == "simulator" and ENVIRONMENT not in ("dev", "qa"):
+    description += " [simulated camera]"
 
 
 # Keyboard support injected into index.html at runtime.
@@ -721,7 +744,8 @@ def main():
         f"Video: {WIDTH}x{HEIGHT} @ {FPS} FPS, "
         f"JPEG quality={JPEG_QUALITY}, "
         f"mode={MODE}, "
-        f"camera={CAMERA_SOURCE}"
+        f"camera={CAMERA_SOURCE}, "
+        f"environment={ENVIRONMENT}"
     )
     print(f"API backend: {API_BASE_URL}")
     print(
