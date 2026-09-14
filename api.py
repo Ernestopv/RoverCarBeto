@@ -12,7 +12,7 @@ import requests
 
 
 # ============================================================
-# CONFIGURACION Y LOGGING
+# CONFIGURATION AND LOGGING
 # ============================================================
 
 app = Flask(__name__)
@@ -27,25 +27,25 @@ HEARTBEAT_INTERVAL = 0.5
 REQUEST_TIMEOUT = 1.0
 
 # ============================================================
-# CALIBRACION DE MOTORES
+# MOTOR CALIBRATION
 # ============================================================
 #
-# Si el rover se desvía:
+# If the rover drifts:
 #
-#   - Si se va hacia la DERECHA:
-#       normalmente el motor IZQUIERDO empuja más.
-#       Baja LEFT_TRIM, por ejemplo a 0.95.
+#   - If it drifts to the RIGHT:
+#       the LEFT motor is usually pushing harder.
+#       Lower LEFT_TRIM, for example to 0.95.
 #
-#   - Si se va hacia la IZQUIERDA:
-#       normalmente el motor DERECHO empuja más.
-#       Baja RIGHT_TRIM, por ejemplo a 0.95.
+#   - If it drifts to the LEFT:
+#       the RIGHT motor is usually pushing harder.
+#       Lower RIGHT_TRIM, for example to 0.95.
 #
-# Valores recomendados: 0.80 .. 1.00
+# Recommended values: 0.80 .. 1.00
 #
 LEFT_TRIM = float(os.environ.get("LEFT_TRIM", "1.0"))
 RIGHT_TRIM = float(os.environ.get("RIGHT_TRIM", "1.0"))
 
-# Evita valores peligrosos o absurdos.
+# Avoid dangerous or unreasonable values.
 LEFT_TRIM = max(0.0, min(1.0, LEFT_TRIM))
 RIGHT_TRIM = max(0.0, min(1.0, RIGHT_TRIM))
 
@@ -57,7 +57,7 @@ log = logging.getLogger("rover-api")
 
 
 # ============================================================
-# ESTADO DEL ROVER
+# ROVER STATE
 # ============================================================
 
 state_lock = threading.Lock()
@@ -74,16 +74,16 @@ last_command_time = 0.0
 
 
 # ============================================================
-# UTILIDADES
+# UTILITIES
 # ============================================================
 
 def clamp(value, minimum=-1.0, maximum=1.0):
-    """Limita un valor numerico al rango indicado."""
+    """Clamp a numeric value to the specified range."""
     return max(minimum, min(maximum, value))
 
 
 def set_state(left, right, speed, direction):
-    """Actualiza el estado interno del controlador de forma segura."""
+    """Safely update the controller internal state."""
     global current_left, current_right, current_speed
     global current_direction, last_command_time
 
@@ -96,7 +96,7 @@ def set_state(left, right, speed, direction):
 
 
 def get_state():
-    """Devuelve una copia del estado actual."""
+    """Return a copy of the current state."""
     with state_lock:
         return {
             "left": current_left,
@@ -113,24 +113,24 @@ def get_state():
 
 
 def parse_speed_param(data_dict):
-    """Extrae y valida el parametro 'speed' de las peticiones HTTP."""
+    """Extract and validate the 'speed' parameter from HTTP requests."""
     if not isinstance(data_dict, dict):
-        return None, "JSON invalido"
+        return None, "Invalid JSON"
 
     speed_val = data_dict.get("speed", current_speed or 0.3)
 
     try:
         return clamp(float(speed_val), 0.0, MAX_SPEED), None
     except (TypeError, ValueError):
-        return None, "Parametro 'speed' debe ser un numero valido"
+        return None, "Parameter 'speed' must be a valid number"
 
 
 def apply_motor_trim(left, right):
     """
-    Aplica compensacion independiente a cada lado.
+    Apply independent compensation to each side.
 
-    Se aplica despues de calcular direccion y velocidad para que funcione
-    igual en forward, backward, left, right y /move.
+    It is applied after calculating direction and speed so it works
+    the same for forward, backward, left, right, and /move.
     """
     left = clamp(left * LEFT_TRIM)
     right = clamp(right * RIGHT_TRIM)
@@ -138,11 +138,11 @@ def apply_motor_trim(left, right):
 
 
 # ============================================================
-# COMUNICACION CON WAVE ROVER
+# COMMUNICATION WITH WAVE ROVER
 # ============================================================
 
 def send_rover_command(left, right):
-    """Envia peticiones HTTP al Wave Rover con L y R entre -1 y 1."""
+    """Send HTTP requests to the Wave Rover with L and R between -1 and 1."""
     global last_rover_response, last_error
 
     left = clamp(float(left))
@@ -176,12 +176,12 @@ def send_rover_command(left, right):
         with state_lock:
             last_error = error
 
-        log.warning("Error comunicando con Wave Rover: %s", error)
+        log.warning("Error communicating with Wave Rover: %s", error)
         return None
 
 
 def move_motors(left, right, speed=None, direction="custom"):
-    """Control centralizado del movimiento y calibracion de motores."""
+    """Centralized movement control and motor calibration."""
     global heartbeat_enabled
 
     left = clamp(left)
@@ -194,14 +194,14 @@ def move_motors(left, right, speed=None, direction="custom"):
     else:
         speed = max(abs(left), abs(right))
 
-    # Compensacion para que el rover vaya recto.
+    # Compensation to keep the rover driving straight.
     left, right = apply_motor_trim(left, right)
 
     heartbeat_enabled = True
     set_state(left, right, speed, direction)
 
     log.debug(
-        "Movimiento %s: L=%.3f R=%.3f speed=%.3f",
+        "Movement %s: L=%.3f R=%.3f speed=%.3f",
         direction,
         left,
         right,
@@ -212,8 +212,8 @@ def move_motors(left, right, speed=None, direction="custom"):
 
 
 def heartbeat_loop():
-    """Reenvia periodicamente la ultima orden al Rover."""
-    log.info("Heartbeat iniciado.")
+    """Periodically resend the latest command to the Rover."""
+    log.info("Heartbeat started.")
 
     while True:
         try:
@@ -222,18 +222,18 @@ def heartbeat_loop():
                     l_val = current_left
                     r_val = current_right
 
-                # Importante: aquí NO se aplica trim otra vez.
+                # Important: trim is NOT applied again here.
                 send_rover_command(l_val, r_val)
 
             time.sleep(HEARTBEAT_INTERVAL)
 
         except Exception as e:
-            log.exception("Error en heartbeat: %s", e)
+            log.exception("Heartbeat error: %s", e)
             time.sleep(HEARTBEAT_INTERVAL)
 
 
 # ============================================================
-# RUTAS API
+# API ROUTES
 # ============================================================
 
 @app.route("/", methods=["GET"])
@@ -274,7 +274,7 @@ def battery():
         data = response.json()
         raw_voltage = data.get("v")
         if raw_voltage is None:
-            return jsonify({"ok": False, "error": "El rover no devolvio el campo v", "raw": data}), 502
+            return jsonify({"ok": False, "error": "The rover did not return the v field", "raw": data}), 502
         voltage = float(raw_voltage)
         if voltage > 100:
             voltage /= 100.0
@@ -316,7 +316,7 @@ def move():
     if not isinstance(data, dict):
         return jsonify({
             "ok": False,
-            "error": "JSON invalido"
+            "error": "Invalid JSON"
         }), 400
 
     try:
@@ -325,7 +325,7 @@ def move():
     except (TypeError, ValueError):
         return jsonify({
             "ok": False,
-            "error": "left y right deben ser numeros"
+            "error": "left and right must be numbers"
         }), 400
 
     response = move_motors(
@@ -395,10 +395,10 @@ def speed():
 @app.route("/api/rover/<direction_name>", methods=["POST"])
 def directional_move(direction_name):
     """
-    Direcciones estandar.
+    Standard directions.
 
-    CORRECCION:
-      Antes LEFT y RIGHT estaban intercambiados para tu rover.
+    CORRECTION:
+      Previously LEFT and RIGHT were swapped for your rover.
 
       forward  -> L + / R +
       backward -> L - / R -
@@ -410,7 +410,7 @@ def directional_move(direction_name):
         "forward": (1, 1),
         "backward": (-1, -1),
 
-        # Corregidos para tu orientación física.
+        # Corrected for your rover's physical orientation.
         "left": (1, -1),
         "right": (-1, 1)
     }
@@ -418,7 +418,7 @@ def directional_move(direction_name):
     if direction_name not in directions:
         return jsonify({
             "ok": False,
-            "error": "Endpoint no encontrado"
+            "error": "Endpoint not found"
         }), 404
 
     data = request.get_json(silent=True) or {}
@@ -474,14 +474,14 @@ def stop():
 
 
 # ============================================================
-# MANEJO DE ERRORES Y MAIN
+# ERROR HANDLING AND MAIN
 # ============================================================
 
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({
         "ok": False,
-        "error": "Endpoint no encontrado"
+        "error": "Endpoint not found"
     }), 404
 
 
@@ -489,7 +489,7 @@ def not_found(error):
 def internal_error(error):
     return jsonify({
         "ok": False,
-        "error": "Error interno del servidor"
+        "error": "Internal server error"
     }), 500
 
 
