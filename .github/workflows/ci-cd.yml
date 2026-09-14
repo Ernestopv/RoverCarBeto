@@ -718,7 +718,7 @@ jobs:
 
     # Manual approval gate.
     # Configure required reviewers for this environment in:
-    # GitHub -> Settings -> Environments -> release
+    # GitHub -> Settings -> Environments -> prod
     environment:
       name: prod
 
