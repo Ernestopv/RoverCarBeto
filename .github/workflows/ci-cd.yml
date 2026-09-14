@@ -148,32 +148,17 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ---------------------------------------------------------
-      # PUBLISH MULTI-ARCH IMAGE
+      # PUBLISH TESTED AMD64 IMAGE ONLY
       #
-      # AMD64:
-      #   Reuse the EXACT image that was already built and tested
-      #   by Docker Compose on the GitHub runner.
+      # DEV and QA run on Azure and use the AMD64 image that was
+      # already built and tested locally in this job.
       #
-      # ARM64:
-      #   Build the same Dockerfile/context for Raspberry Pi 5.
+      # ARM64 is intentionally NOT built here. It is built only
+      # after QA approval, inside release-candidate.
       #
-      # Final immutable tag:
-      #   ghcr.io/<owner>/rover-car-beto:<GITHUB_SHA>
-      #     ├── linux/amd64  -> Azure DEV / QA
-      #     └── linux/arm64  -> Raspberry Pi PROD
+      # Published immutable QA candidate:
+      #   ghcr.io/<owner>/rover-car-beto:<GITHUB_SHA>-amd64
       # ---------------------------------------------------------
-
-      - name: Set up QEMU
-        if: github.event_name != 'pull_request'
-        uses: docker/setup-qemu-action@v4
-        with:
-          platforms: arm64
-
-      - name: Set up Docker Buildx
-        if: github.event_name != 'pull_request'
-        uses: docker/setup-buildx-action@v4
-
-      # Publish the exact AMD64 image that passed the local DEV tests.
       - name: Push tested AMD64 image
         if: github.event_name != 'pull_request'
         shell: bash
@@ -186,94 +171,26 @@ jobs:
 
           docker push "${IMAGE_NAME}:${GITHUB_SHA}-amd64"
 
-          echo "Published tested AMD64:"
+          echo "Published tested AMD64 image:"
           echo "${IMAGE_NAME}:${GITHUB_SHA}-amd64"
-
-      # Build the ARM64 sibling image for Raspberry Pi 5.
-      - name: Build and push ARM64 image
-        if: github.event_name != 'pull_request'
-        shell: bash
-        run: |
-          docker buildx build \
-            --platform linux/arm64 \
-            --file Dockerfile \
-            --tag "${IMAGE_NAME}:${GITHUB_SHA}-arm64" \
-            --cache-from type=gha,scope=rover-arm64 \
-            --cache-to type=gha,mode=max,scope=rover-arm64 \
-            --push \
-            .
-
-          echo "Published ARM64:"
-          echo "${IMAGE_NAME}:${GITHUB_SHA}-arm64"
-
-      # Create one immutable multi-platform tag that points to both
-      # architecture-specific images.
-      - name: Create multi-arch SHA manifest
-        if: github.event_name != 'pull_request'
-        shell: bash
-        run: |
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:${GITHUB_SHA}" \
-            "${IMAGE_NAME}:${GITHUB_SHA}-amd64" \
-            "${IMAGE_NAME}:${GITHUB_SHA}-arm64"
-
-          echo "Published multi-arch image:"
-          echo "${IMAGE_NAME}:${GITHUB_SHA}"
-
-      - name: Verify multi-arch image
-        if: github.event_name != 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          IMAGE="${IMAGE_NAME}:${GITHUB_SHA}"
-
-          docker buildx imagetools inspect "${IMAGE}"
-
-          RAW="$(
-            docker buildx imagetools inspect \
-              --raw \
-              "${IMAGE}"
-          )"
-
-          # Validate only real runtime platforms.
-          # Buildx may also publish an attestation manifest as unknown/unknown;
-          # that is expected and must not make this check fail.
-          echo "${RAW}" | jq -e '
-            .manifests
-            | any(
-                .platform.os == "linux"
-                and .platform.architecture == "amd64"
-              )
-          ' >/dev/null
-
-          echo "${RAW}" | jq -e '
-            .manifests
-            | any(
-                .platform.os == "linux"
-                and .platform.architecture == "arm64"
-              )
-          ' >/dev/null
-
-          echo "Verified multi-arch image:"
-          echo "  - linux/amd64"
-          echo "  - linux/arm64"
 
       # ---------------------------------------------------------
       # FLOATING :dev ALIAS
-      # Only develop updates the floating DEV alias.
-      # The alias points to the same multi-arch manifest.
+      # Only develop updates this convenience tag.
+      # It is AMD64-only and is NOT used for PROD promotion.
       # ---------------------------------------------------------
       - name: Publish DEV tag
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
         shell: bash
         run: |
-          docker buildx imagetools create \
-            --tag "${IMAGE_NAME}:dev" \
-            "${IMAGE_NAME}:${GITHUB_SHA}"
+          docker tag \
+            rover-car-beto:dev \
+            "${IMAGE_NAME}:dev"
+
+          docker push "${IMAGE_NAME}:dev"
 
           echo "Updated:"
-          echo "${IMAGE_NAME}:dev -> ${IMAGE_NAME}:${GITHUB_SHA}"
+          echo "${IMAGE_NAME}:dev -> ${IMAGE_NAME}:${GITHUB_SHA}-amd64"
 
       # ---------------------------------------------------------
       # DEBUG
@@ -450,7 +367,7 @@ jobs:
         shell: bash
         run: |
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
-          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}"
+          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}-amd64"
 
           echo "AZURE_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
           echo "Deploying ${IMAGE}"
@@ -692,7 +609,7 @@ jobs:
         shell: bash
         run: |
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
-          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}"
+          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}-amd64"
 
           echo "AZURE_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
           echo "Promoting DEV image to QA:"
@@ -778,12 +695,13 @@ jobs:
             echo ""
             echo "- Image: \`${AZURE_IMAGE}\`"
             echo "- QA-approved SHA: \`${GITHUB_SHA}\`"
+            echo "- QA-tested image: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rover-car-beto:${GITHUB_SHA}-amd64\`"
             echo "- Container App: \`${AZURE_CONTAINER_APP_NAME}\`"
             echo "- URL: ${AZURE_QA_URL}"
             echo "- DEV → QA promotion: ✅"
             echo ""
             echo "### Next release step"
-            echo "1. The release-candidate job will create \`${RELEASE_BRANCH}\` from this exact QA-approved SHA."
+            echo "1. The release-candidate job will build ARM64, create the final multi-arch tag, and create \`${RELEASE_BRANCH}\` from this exact QA-approved SHA."
             echo "2. Open/merge a PR from \`${RELEASE_BRANCH}\` into \`main\`."
             echo "3. Run the separate \`Rover PROD\` workflow from \`main\`."
             echo "4. Deploy this exact QA-approved SHA: \`${GITHUB_SHA}\`."
@@ -792,27 +710,30 @@ jobs:
   # =============================================================
   # RELEASE CANDIDATE
   #
-  # This job DOES NOT deploy production.
+  # Runs only AFTER QA has approved and tested the AMD64 candidate.
   #
-  # It creates an immutable release branch that points to the exact
-  # SHA that passed QA:
+  # It performs the expensive ARM64 work only once for a real release:
   #
-  #   develop -> DEV -> QA -> release/qa-<short-sha>
-  #                              |
-  #                              v
-  #                     PR release/... -> main
-  #                              |
-  #                              v
-  #                         prod.yml
-  #                              |
-  #                              v
-  #                       Raspberry Pi 5
-  #
-  # This prevents newer, not-yet-approved commits in develop from
-  # accidentally reaching main/PROD.
+  #   QA-approved <SHA>-amd64
+  #             +
+  #      build <SHA>-arm64
+  #             |
+  #             v
+  #      final multi-arch <SHA>
+  #       ├─ linux/amd64
+  #       └─ linux/arm64
+  #             |
+  #             v
+  #   release/qa-<short-sha>
+  #             |
+  #             v
+  #          PR -> main
+  #             |
+  #             v
+  #           PROD
   # =============================================================
   release-candidate:
-    name: Create QA-approved release branch
+    name: Build ARM64 and create release candidate
     needs: deploy-qa
     runs-on: ubuntu-latest
 
@@ -820,10 +741,9 @@ jobs:
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/develop'
 
-    # Global workflow permission is contents:read. This one job needs
-    # write permission only to create the release branch.
     permissions:
       contents: write
+      packages: write
 
     steps:
       - name: Checkout full repository history
@@ -831,7 +751,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Prepare QA-approved release
+      - name: Prepare release metadata
         id: release
         shell: bash
         run: |
@@ -840,19 +760,121 @@ jobs:
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           SHORT_SHA="${GITHUB_SHA:0:12}"
           RELEASE_BRANCH="release/qa-${SHORT_SHA}"
-          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}"
+          IMAGE_NAME="ghcr.io/${OWNER}/rover-car-beto"
+          AMD64_IMAGE="${IMAGE_NAME}:${GITHUB_SHA}-amd64"
+          ARM64_IMAGE="${IMAGE_NAME}:${GITHUB_SHA}-arm64"
+          RELEASE_IMAGE="${IMAGE_NAME}:${GITHUB_SHA}"
 
-          # Confirm the exact approved commit exists locally.
-          git cat-file -e "${GITHUB_SHA}^{commit}"
+          {
+            echo "IMAGE_NAME=${IMAGE_NAME}"
+            echo "AMD64_IMAGE=${AMD64_IMAGE}"
+            echo "ARM64_IMAGE=${ARM64_IMAGE}"
+            echo "RELEASE_IMAGE=${RELEASE_IMAGE}"
+            echo "RELEASE_BRANCH=${RELEASE_BRANCH}"
+          } >> "$GITHUB_ENV"
 
           {
             echo "release_branch=${RELEASE_BRANCH}"
             echo "short_sha=${SHORT_SHA}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Confirm we are extending the exact AMD64 image that passed QA.
+      - name: Verify QA-approved AMD64 image exists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools inspect "${AMD64_IMAGE}"
+
+          echo "QA-approved AMD64 image found:"
+          echo "${AMD64_IMAGE}"
+
+      # ARM64 is expensive under QEMU, so do it only after QA approval.
+      - name: Set up QEMU for ARM64
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push ARM64 release image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --file Dockerfile \
+            --tag "${ARM64_IMAGE}" \
+            --cache-from type=gha,scope=rover-arm64 \
+            --cache-to type=gha,mode=max,scope=rover-arm64 \
+            --push \
+            .
+
+          echo "Published ARM64 release image:"
+          echo "${ARM64_IMAGE}"
+
+      - name: Create final multi-arch release image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools create \
+            --tag "${RELEASE_IMAGE}" \
+            "${AMD64_IMAGE}" \
+            "${ARM64_IMAGE}"
+
+          echo "Created final release image:"
+          echo "${RELEASE_IMAGE}"
+
+      - name: Verify final multi-arch release image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools inspect "${RELEASE_IMAGE}"
+
+          RAW="$(
+            docker buildx imagetools inspect \
+              --raw \
+              "${RELEASE_IMAGE}"
+          )"
+
+          echo "${RAW}" | jq -e '
+            .manifests
+            | any(
+                .platform.os == "linux"
+                and .platform.architecture == "amd64"
+              )
+          ' >/dev/null
+
+          echo "${RAW}" | jq -e '
+            .manifests
+            | any(
+                .platform.os == "linux"
+                and .platform.architecture == "arm64"
+              )
+          ' >/dev/null
+
+          echo "Verified:"
+          echo "  - linux/amd64"
+          echo "  - linux/arm64"
+
+      - name: Create release metadata file
+        shell: bash
+        run: |
           {
             echo "QA_APPROVED_SHA=${GITHUB_SHA}"
-            echo "QA_APPROVED_IMAGE=${IMAGE}"
+            echo "QA_TESTED_IMAGE=${AMD64_IMAGE}"
+            echo "PROD_RELEASE_IMAGE=${RELEASE_IMAGE}"
             echo "RELEASE_BRANCH=${RELEASE_BRANCH}"
             echo "TARGET_BRANCH=main"
           } > qa-approved-release.env
@@ -861,14 +883,11 @@ jobs:
 
       - name: Create release branch from exact QA-approved SHA
         shell: bash
-        env:
-          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
         run: |
           set -euo pipefail
 
-          # Idempotent behavior for workflow re-runs:
-          # - if the remote branch already points to this SHA, succeed;
-          # - if it points somewhere else, fail instead of rewriting it.
+          git cat-file -e "${GITHUB_SHA}^{commit}"
+
           REMOTE_SHA="$(
             git ls-remote \
               --heads origin \
@@ -879,18 +898,17 @@ jobs:
           if [ -n "${REMOTE_SHA}" ]; then
             if [ "${REMOTE_SHA}" = "${GITHUB_SHA}" ]; then
               echo "${RELEASE_BRANCH} already exists and points to ${GITHUB_SHA}."
-              exit 0
+            else
+              echo "ERROR: ${RELEASE_BRANCH} exists but points to ${REMOTE_SHA}."
+              echo "Refusing to overwrite an existing release branch."
+              exit 1
             fi
+          else
+            git push origin \
+              "${GITHUB_SHA}:refs/heads/${RELEASE_BRANCH}"
 
-            echo "ERROR: ${RELEASE_BRANCH} already exists but points to ${REMOTE_SHA}."
-            echo "Refusing to overwrite an existing release branch."
-            exit 1
+            echo "Created ${RELEASE_BRANCH} -> ${GITHUB_SHA}"
           fi
-
-          git push origin \
-            "${GITHUB_SHA}:refs/heads/${RELEASE_BRANCH}"
-
-          echo "Created ${RELEASE_BRANCH} -> ${GITHUB_SHA}"
 
       - name: Upload QA-approved release metadata
         uses: actions/upload-artifact@v4
@@ -902,29 +920,24 @@ jobs:
 
       - name: Release candidate summary
         shell: bash
-        env:
-          RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
         run: |
-          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
-          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}"
-
           {
             echo "## QA-approved release candidate"
             echo ""
             echo "- Commit SHA: \`${GITHUB_SHA}\`"
-            echo "- Image: \`${IMAGE}\`"
+            echo "- QA-tested AMD64: \`${AMD64_IMAGE}\`"
+            echo "- Final multi-arch image: \`${RELEASE_IMAGE}\`"
             echo "- Release branch: \`${RELEASE_BRANCH}\`"
             echo "- Target branch: \`main\`"
-            echo "- Architectures: \`linux/amd64\`, \`linux/arm64\`"
-            echo "- QA: ✅"
+            echo "- linux/amd64: ✅"
+            echo "- linux/arm64: ✅"
             echo ""
             echo "### Production handoff"
             echo "Open a PR:"
             echo ""
             echo "\`${RELEASE_BRANCH}\` → \`main\`"
             echo ""
-            echo "After that PR is merged, run the \`Rover PROD\` workflow"
-            echo "from \`main\` using this exact SHA:"
+            echo "After merge, run \`Rover PROD\` from \`main\` using:"
             echo ""
             echo "\`${GITHUB_SHA}\`"
           } >> "$GITHUB_STEP_SUMMARY"
