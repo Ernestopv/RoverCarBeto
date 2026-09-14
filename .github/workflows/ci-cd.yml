@@ -337,3 +337,134 @@ jobs:
             echo "- Container App: \`${AZURE_CONTAINER_APP_NAME}\`"
             echo "- URL: ${AZURE_DEV_URL}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # =============================================================
+  # CD QA
+  # Promote EXACTLY the same SHA image that passed DEV.
+  # The GitHub Environment "qa" can require manual approval.
+  # =============================================================
+  deploy-qa:
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/develop'
+
+    environment:
+      name: qa
+      url: ${{ vars.AZURE_QA_URL }}
+
+    env:
+      AZURE_CONTAINER_APP_NAME: rover-car-beto-qa
+      AZURE_QA_URL: ${{ vars.AZURE_QA_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Login to Azure
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Container Apps CLI extension
+        run: |
+          az extension add \
+            --name containerapp \
+            --upgrade \
+            --yes
+
+      - name: Prepare QA image name
+        shell: bash
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER}/rover-car-beto:${GITHUB_SHA}"
+
+          echo "AZURE_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "Promoting DEV image to QA:"
+          echo "${IMAGE}"
+
+      - name: Deploy image to Azure Container Apps QA
+        run: |
+          az containerapp update \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "${AZURE_IMAGE}" \
+            --output none
+
+      - name: Verify deployed QA image
+        shell: bash
+        run: |
+          DEPLOYED_IMAGE="$(
+            az containerapp show \
+              --name "${AZURE_CONTAINER_APP_NAME}" \
+              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+              --query "properties.template.containers[0].image" \
+              --output tsv
+          )"
+
+          echo "Expected: ${AZURE_IMAGE}"
+          echo "Deployed: ${DEPLOYED_IMAGE}"
+          test "${DEPLOYED_IMAGE}" = "${AZURE_IMAGE}"
+
+      - name: Wait for Azure QA
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            HEALTH=0
+            UI=0
+            API=0
+            SIM=0
+
+            curl -fsS "${AZURE_QA_URL}/health" >/dev/null && HEALTH=1 || true
+            curl -fsS "${AZURE_QA_URL}/" >/dev/null && UI=1 || true
+            curl -fsS "${AZURE_QA_URL}/api/rover/status" >/dev/null && API=1 || true
+            curl -fsS "${AZURE_QA_URL}/simulator/health" >/dev/null && SIM=1 || true
+
+            if [ "$HEALTH" = 1 ] && \
+               [ "$UI" = 1 ] && \
+               [ "$API" = 1 ] && \
+               [ "$SIM" = 1 ]; then
+              echo "Azure QA is ready"
+              exit 0
+            fi
+
+            echo "Waiting for Azure QA revision... attempt $i/60"
+            echo "health=$HEALTH ui=$UI api=$API simulator=$SIM"
+            sleep 5
+          done
+
+          echo "Azure QA did not become ready"
+
+          az containerapp revision list \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --output table || true
+
+          exit 1
+
+      - name: Install pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: Run integration tests against Azure QA
+        env:
+          TEST_BASE_URL: ${{ vars.AZURE_QA_URL }}
+        run: |
+          pytest -q tests/test_dev.py
+
+      - name: QA deployment summary
+        run: |
+          {
+            echo "## Azure QA deployed"
+            echo ""
+            echo "- Image: \`${AZURE_IMAGE}\`"
+            echo "- Container App: \`${AZURE_CONTAINER_APP_NAME}\`"
+            echo "- URL: ${AZURE_QA_URL}"
+            echo "- DEV → QA promotion: ✅"
+          } >> "$GITHUB_STEP_SUMMARY"
+
