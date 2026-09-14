@@ -18,6 +18,26 @@ lock = threading.Lock()
 SIM_PORT = int(os.getenv("SIM_PORT", "80"))
 UPDATE_HZ = float(os.getenv("SIM_UPDATE_HZ", "30"))
 
+# APPLICATION ENVIRONMENT
+#   dev  -> DEVELOPMENT
+#   qa   -> QA
+#   prod -> PRODUCTION
+ENVIRONMENT = os.getenv("ENVIRONMENT", "dev").strip().lower()
+
+ENVIRONMENT_LABELS = {
+    "dev": "DEVELOPMENT",
+    "qa": "QA",
+    "prod": "PRODUCTION",
+}
+
+if ENVIRONMENT not in ENVIRONMENT_LABELS:
+    raise RuntimeError(
+        f"Invalid ENVIRONMENT={ENVIRONMENT!r}. "
+        "Available values: dev, qa, prod"
+    )
+
+ENVIRONMENT_LABEL = ENVIRONMENT_LABELS[ENVIRONMENT]
+
 # Simulated world dimensions in meters
 WORLD_WIDTH = float(os.getenv("SIM_WORLD_WIDTH", "6.0"))
 WORLD_HEIGHT = float(os.getenv("SIM_WORLD_HEIGHT", "4.0"))
@@ -172,12 +192,16 @@ def health():
         return jsonify({
             "ok": False,
             "service": "wave-rover-simulator",
+            "environment": ENVIRONMENT,
+            "environment_label": ENVIRONMENT_LABEL,
             "connected": False
         }), 503
 
     return jsonify({
         "ok": True,
         "service": "wave-rover-simulator",
+        "environment": ENVIRONMENT,
+        "environment_label": ENVIRONMENT_LABEL,
         "connected": True
     })
 
@@ -189,6 +213,8 @@ def get_state():
 
     return jsonify({
         "ok": True,
+        "environment": ENVIRONMENT,
+        "environment_label": ENVIRONMENT_LABEL,
         "world": {
             "width": WORLD_WIDTH,
             "height": WORLD_HEIGHT
@@ -333,7 +359,7 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Wave Rover Simulator</title>
+<title>Wave Rover Simulator - __ENVIRONMENT_LABEL__</title>
 <style>
     :root {
         color-scheme: dark;
@@ -439,9 +465,9 @@ PAGE = r"""<!doctype html>
 
 <body>
 <div class="page">
-    <h1>Wave Rover Simulator</h1>
+    <h1>Wave Rover Simulator - __ENVIRONMENT_LABEL__</h1>
     <div class="subtitle">
-        DEV diagnostic view. Control the rover from your real ui.py.
+        __ENVIRONMENT_LABEL__ environment diagnostic view. Control the rover from your real ui.py.
     </div>
 
     <div class="layout">
@@ -465,7 +491,7 @@ PAGE = r"""<!doctype html>
 
             <hr style="border-color:#30363d;margin:16px 0">
 
-            <strong>DEV Scenarios</strong>
+            <strong>__ENVIRONMENT_LABEL__ Scenarios</strong>
 
             <div class="scenario-row">
                 <button onclick="setVoltage(12.4)">High battery</button>
@@ -633,15 +659,21 @@ refresh();
 
 @app.get("/")
 def index():
-    return Response(PAGE, mimetype="text/html")
+    page = (
+        PAGE
+        .replace("__ENVIRONMENT_LABEL__", ENVIRONMENT_LABEL)
+        .replace("__ENVIRONMENT_NAME__", ENVIRONMENT)
+    )
+    return Response(page, mimetype="text/html")
 
 
 if __name__ == "__main__":
     threading.Thread(target=physics_loop, daemon=True).start()
 
     print("==========================================")
-    print("       WAVE ROVER DEV SIMULATOR")
+    print(f"       WAVE ROVER {ENVIRONMENT_LABEL} SIMULATOR")
     print("==========================================")
+    print(f"Environment: {ENVIRONMENT} ({ENVIRONMENT_LABEL})")
     print(f"World: {WORLD_WIDTH}m x {WORLD_HEIGHT}m")
     print(f"Update: {UPDATE_HZ} Hz")
     print(f"Port: {SIM_PORT}")

@@ -21,6 +21,19 @@ FPS = int(os.getenv("CAMERA_FPS", "30"))
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "55"))
 PORT = int(os.getenv("UI_PORT", "8001"))
 
+# APPLICATION ENVIRONMENT
+#   dev  -> development environment with simulators
+#   qa   -> QA validation environment
+#   prod -> Raspberry Pi / production
+ENVIRONMENT = os.getenv("ENVIRONMENT", "prod").strip().lower()
+
+if ENVIRONMENT not in ("dev", "qa", "prod"):
+    print(
+        f"\nERROR: Invalid ENVIRONMENT: {ENVIRONMENT}\n"
+        "Available values: dev, qa, prod\n"
+    )
+    sys.exit(1)
+
 # CAMERA SOURCE
 #   imx500     -> Raspberry Pi AI Camera
 #   simulator  -> FFmpeg generated test pattern for DEV
@@ -86,8 +99,16 @@ description = (
     else "PoseNet - Human Pose Estimation"
 )
 
-if CAMERA_SOURCE == "simulator":
+if ENVIRONMENT == "dev":
     description += " [DEV simulator]"
+elif ENVIRONMENT == "qa":
+    description += " [QA environment]"
+elif ENVIRONMENT == "prod":
+    description += ""
+
+# Add camera source detail only when useful.
+if CAMERA_SOURCE == "simulator" and ENVIRONMENT not in ("dev", "qa"):
+    description += " [simulated camera]"
 
 
 # Keyboard support injected into index.html at runtime.
@@ -723,7 +744,8 @@ def main():
         f"Video: {WIDTH}x{HEIGHT} @ {FPS} FPS, "
         f"JPEG quality={JPEG_QUALITY}, "
         f"mode={MODE}, "
-        f"camera={CAMERA_SOURCE}"
+        f"camera={CAMERA_SOURCE}, "
+        f"environment={ENVIRONMENT}"
     )
     print(f"API backend: {API_BASE_URL}")
     print(
