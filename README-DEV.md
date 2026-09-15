@@ -1,142 +1,114 @@
-# Wave Rover - DEV integrado
+# RoverCarBeto
 
-Este entorno ejecuta:
+This environment runs:
 
-- `ui.py` REAL en `http://localhost:8000`
-- `api.py` REAL en `http://localhost:5000`
-- Wave Rover 2D simulado en `http://localhost:8081`
+- REAL `ui.py` at [`http://localhost:8000`](http://localhost:8000)
 
-## Arquitectura
+- REAL `api.py` at [`http://localhost:5000`](http://localhost:5000)
+
+- Simulated 2D Wave Rover at [`http://localhost:8081`](http://localhost:8081)
+
+## Architecture
 
 ```text
 Browser
   |
   v
-ui.py REAL :8000
+REAL ui.py :8000
   |              \
   |               \ camera source = simulator (FFmpeg)
   v
-api.py REAL :5000
+REAL api.py :5000
   |
-  | protocolo /js?json=...
+  | protocol /js?json=...
   v
 Wave Rover Simulator :8081
   |
-  +-- mapa 2D
-  +-- física diferencial
-  +-- batería
-  +-- latencia
-  +-- desconexiones/fallos
-```
-
-## Arrancar
-
-```bash
+  +-- 2D map
+  +-- differential-drive physics
+  +-- battery
+  +-- latency
+  +-- disconnections/failures
+Start
 cp .env.dev.example .env.dev
 
 docker compose \
   --env-file .env.dev \
   -f docker-compose.dev.yml \
   up --build
-```
 
-Primera vez: ejecuta sin `-d` para ver los logs.
+The first time, run it without -d so you can see the logs.
 
-Después abre:
+Then open:
 
-- Aplicación real: http://localhost:8000
-- API real: http://localhost:5000
-- Simulador 2D: http://localhost:8081
+Real application: http://localhost:8000
+Real API: http://localhost:5000
+2D simulator: http://localhost:8081
 
-Abre `8000` y `8081` en dos pestañas. Los botones de `ui.py` deben mover el rover del mapa 2D.
+Open 8000 and 8081 in two browser tabs. The buttons in ui.py should move the rover on the 2D map.
 
-## Ejecutar en background
-
-```bash
+Run in the background
 docker compose \
   --env-file .env.dev \
   -f docker-compose.dev.yml \
   up -d --build
-```
-
-## Ver logs
-
-```bash
+View logs
 docker compose \
   --env-file .env.dev \
   -f docker-compose.dev.yml \
   logs -f
-```
 
-Solo UI:
+UI only:
 
-```bash
 docker compose --env-file .env.dev -f docker-compose.dev.yml logs -f rover-ui
-```
-
-## Tests
-
-```bash
+Tests
 python3 -m pip install pytest
+
 pytest -q tests/test_dev.py
-```
 
-Se comprueba:
-- servicios
-- forward + movimiento físico
-- left + giro visual a la izquierda
-- right + giro visual a la derecha
-- stop
-- batería simulada
-- latencia simulada
-- stream MJPEG de cámara falsa
+The following are verified:
 
-## Escenarios
+services
+forward + physical movement
+left + visual left turn
+right + visual right turn
+stop
+simulated battery
+simulated latency
+fake camera MJPEG stream
+Scenarios
 
-Batería baja:
+Low battery:
 
-```bash
 curl -X POST http://localhost:8081/scenario \
   -H 'Content-Type: application/json' \
   -d '{"voltage":10.4}'
-```
 
-Desconectar hardware:
+Disconnect hardware:
 
-```bash
 curl -X POST http://localhost:8081/scenario \
   -H 'Content-Type: application/json' \
   -d '{"connected":false}'
-```
 
-Reconectar:
+Reconnect:
 
-```bash
 curl -X POST http://localhost:8081/scenario \
   -H 'Content-Type: application/json' \
   -d '{"connected":true}'
-```
 
-Latencia:
+Latency:
 
-```bash
 curl -X POST http://localhost:8081/scenario \
   -H 'Content-Type: application/json' \
   -d '{"latency_ms":500}'
-```
+MODE
 
-## MODE
+You can test:
 
-Puedes probar:
-
-```env
 MODE=pose
-```
 
-o:
+or:
 
-```env
 MODE=objects
-```
 
-En DEV la cámara es simulada. Todavía no estamos ejecutando la inferencia IMX500 real; eso se incorporará como un simulador de resultados AI en una siguiente fase.
+In DEV, the camera is simulated. We are not yet running real IMX500 inference; that will be added in a later phase as a simulator for AI results.
