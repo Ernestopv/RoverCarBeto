@@ -57,3 +57,8 @@ The development environment runs four services inside the Docker container:
 
 ## CI/CD Diagram 
 ![alt text](image.png)
+
+## Related repositories
+
+- [Rover Deploy Agent](https://github.com/Ernestopv/rover-deploy-agent) — runs on the Raspberry Pi and receives, loads, and activates Docker releases.
+- [Rover USB Deployer UI](https://github.com/Ernestopv/rover-usb-deployer-ui) — provides the interface for sending releases to the deploy agent.
