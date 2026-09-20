@@ -24,6 +24,7 @@ API_PORT = 5000
 
 MAX_SPEED = 1.0
 HEARTBEAT_INTERVAL = 0.5
+WATCHDOG_TIMEOUT = 2.0
 REQUEST_TIMEOUT = 1.0
 
 # ============================================================
@@ -60,11 +61,13 @@ log = logging.getLogger("rover-api")
 # ROVER STATE
 # ============================================================
 
-state_lock = threading.Lock()
+state_lock = threading.RLock()
+command_lock = threading.Lock()
 
 current_left = 0.0
 current_right = 0.0
 current_speed = 0.0
+selected_speed = 0.3
 current_direction = "stop"
 heartbeat_enabled = False
 
@@ -82,15 +85,17 @@ def clamp(value, minimum=-1.0, maximum=1.0):
     return max(minimum, min(maximum, value))
 
 
-def set_state(left, right, speed, direction):
+def set_state(left, right, speed, direction, selected=None):
     """Safely update the controller internal state."""
     global current_left, current_right, current_speed
-    global current_direction, last_command_time
+    global selected_speed, current_direction, last_command_time
 
     with state_lock:
         current_left = left
         current_right = right
         current_speed = speed
+        if selected is not None:
+            selected_speed = selected
         current_direction = direction
         last_command_time = time.time()
 
@@ -102,8 +107,10 @@ def get_state():
             "left": current_left,
             "right": current_right,
             "speed": current_speed,
+            "selected_speed": selected_speed,
             "direction": current_direction,
             "heartbeat": heartbeat_enabled,
+            "watchdog_timeout": WATCHDOG_TIMEOUT,
             "left_trim": LEFT_TRIM,
             "right_trim": RIGHT_TRIM,
             "last_command_time": last_command_time,
@@ -117,7 +124,10 @@ def parse_speed_param(data_dict):
     if not isinstance(data_dict, dict):
         return None, "Invalid JSON"
 
-    speed_val = data_dict.get("speed", current_speed or 0.3)
+    with state_lock:
+        default_speed = selected_speed
+
+    speed_val = data_dict.get("speed", default_speed)
 
     try:
         return clamp(float(speed_val), 0.0, MAX_SPEED), None
@@ -197,33 +207,61 @@ def move_motors(left, right, speed=None, direction="custom"):
     # Compensation to keep the rover driving straight.
     left, right = apply_motor_trim(left, right)
 
-    heartbeat_enabled = True
-    set_state(left, right, speed, direction)
+    with command_lock:
+        with state_lock:
+            heartbeat_enabled = True
 
-    log.debug(
-        "Movement %s: L=%.3f R=%.3f speed=%.3f",
-        direction,
-        left,
-        right,
-        speed
-    )
+        # Remember the requested speed independently from the physical state.
+        set_state(left, right, speed, direction, selected=speed)
 
-    return send_rover_command(left, right)
+        log.debug(
+            "Movement %s: L=%.3f R=%.3f speed=%.3f",
+            direction,
+            left,
+            right,
+            speed
+        )
+
+        return send_rover_command(left, right)
 
 
 def heartbeat_loop():
-    """Periodically resend the latest command to the Rover."""
+    """Resend active commands and stop if control messages go stale."""
+    global current_left, current_right, current_speed
+    global current_direction, heartbeat_enabled
+
     log.info("Heartbeat started.")
 
     while True:
         try:
-            if heartbeat_enabled:
-                with state_lock:
-                    l_val = current_left
-                    r_val = current_right
+            command = None
+            watchdog_stop = False
 
-                # Important: trim is NOT applied again here.
-                send_rover_command(l_val, r_val)
+            with command_lock:
+                with state_lock:
+                    if heartbeat_enabled:
+                        elapsed = time.time() - last_command_time
+
+                        if elapsed >= WATCHDOG_TIMEOUT:
+                            heartbeat_enabled = False
+                            current_left = 0.0
+                            current_right = 0.0
+                            current_speed = 0.0
+                            current_direction = "stop"
+                            command = (0.0, 0.0)
+                            watchdog_stop = True
+                        else:
+                            command = (current_left, current_right)
+
+                if command is not None:
+                    # Important: trim is NOT applied again here.
+                    send_rover_command(*command)
+
+            if watchdog_stop:
+                log.warning(
+                    "Watchdog stopped the rover after %.1f seconds without commands.",
+                    WATCHDOG_TIMEOUT
+                )
 
             time.sleep(HEARTBEAT_INTERVAL)
 
@@ -346,7 +384,7 @@ def move():
 
 @app.route("/api/rover/speed", methods=["POST"])
 def speed():
-    global current_speed
+    global current_speed, selected_speed, heartbeat_enabled
 
     data = request.get_json(silent=True) or {}
 
@@ -358,35 +396,54 @@ def speed():
             "error": error
         }), 400
 
-    with state_lock:
-        direction = current_direction
-        old_left = current_left
-        old_right = current_right
-
-    if old_left == 0 and old_right == 0:
+    with command_lock:
         with state_lock:
-            current_speed = new_speed
+            direction = current_direction
+            old_left = current_left
+            old_right = current_right
+            old_speed = current_speed
 
-        return jsonify({
-            "ok": True,
-            "speed": new_speed,
-            "direction": "stop"
-        })
+        if old_left == 0 and old_right == 0:
+            with state_lock:
+                selected_speed = new_speed
 
-    base_left = 1 if old_left > 0 else -1
-    base_right = 1 if old_right > 0 else -1
+            return jsonify({
+                "ok": True,
+                "speed": new_speed,
+                "direction": "stop",
+                "controller": get_state()
+            })
 
-    response = move_motors(
-        base_left,
-        base_right,
-        speed=new_speed,
-        direction=direction
-    )
+        if old_speed <= 0:
+            return jsonify({
+                "ok": False,
+                "error": "Unable to determine current speed"
+            }), 409
+
+        ratio = new_speed / old_speed
+        new_left = clamp(old_left * ratio)
+        new_right = clamp(old_right * ratio)
+        new_direction = direction if new_speed > 0 else "stop"
+
+        # current_left/current_right already include motor trim, so do not apply
+        # it a second time while changing speed.
+        if new_speed == 0:
+            with state_lock:
+                heartbeat_enabled = False
+
+        set_state(
+            new_left,
+            new_right,
+            new_speed,
+            new_direction,
+            selected=new_speed
+        )
+        response = send_rover_command(new_left, new_right)
 
     return jsonify({
         "ok": True,
         "speed": new_speed,
-        "direction": direction,
+        "direction": new_direction,
         "controller": get_state(),
         "rover_response": response
     })
@@ -458,10 +515,14 @@ def directional_move(direction_name):
 def stop():
     global heartbeat_enabled
 
-    heartbeat_enabled = False
+    with command_lock:
+        with state_lock:
+            heartbeat_enabled = False
 
-    response = send_rover_command(0, 0)
-    set_state(0, 0, 0, "stop")
+        response = send_rover_command(0, 0)
+
+        # Stop the motors without forgetting the user's selected speed.
+        set_state(0, 0, 0, "stop")
 
     return jsonify({
         "ok": True,
@@ -501,6 +562,7 @@ if __name__ == "__main__":
     log.info("API:   http://0.0.0.0:%d", API_PORT)
     log.info("LEFT_TRIM:  %.3f", LEFT_TRIM)
     log.info("RIGHT_TRIM: %.3f", RIGHT_TRIM)
+    log.info("WATCHDOG:   %.1f seconds", WATCHDOG_TIMEOUT)
 
     threading.Thread(
         target=heartbeat_loop,
