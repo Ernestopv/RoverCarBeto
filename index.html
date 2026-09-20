@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Rover Web Controller</title>
     <link rel="stylesheet" href="/style.css" />
+    <style>
+      .control {
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+    </style>
   </head>
 
   <body>
@@ -66,7 +73,7 @@
         class="control stop"
         id="stop"
         aria-label="Stop"
-        onclick="stopMove()"
+        onclick="stopMove(true)"
       >
         &#9632;
       </button>
@@ -105,6 +112,7 @@
 
       let activeDirection = null;
       let movementTimer = null;
+      let movementAbortController = null;
       let movementGeneration = 0;
       const pressedKeys = [];
 
@@ -137,10 +145,13 @@
 
         const direction = activeDirection;
         const speed = Number(speedInput.value);
+        const abortController = new AbortController();
+        movementAbortController = abortController;
 
         try {
           const response = await fetch("/api/rover/" + direction, {
             method: "POST",
+            signal: abortController.signal,
             headers: {
               "Content-Type": "application/json",
             },
@@ -151,8 +162,14 @@
             throw new Error("HTTP " + response.status);
           }
         } catch (err) {
-          console.error("Move error:", err);
+          if (err.name !== "AbortError") {
+            console.error("Move error:", err);
+          }
         } finally {
+          if (movementAbortController === abortController) {
+            movementAbortController = null;
+          }
+
           if (generation === movementGeneration && activeDirection !== null) {
             movementTimer = setTimeout(
               () => sendMovement(generation),
@@ -168,15 +185,32 @@
         }
 
         clearMovementTimer();
+
+        if (movementAbortController !== null) {
+          movementAbortController.abort();
+          movementAbortController = null;
+        }
+
         activeDirection = direction;
         movementGeneration += 1;
         sendMovement(movementGeneration);
       }
 
-      function stopMove() {
+      function stopMove(force = false) {
+        const wasMoving = activeDirection !== null;
+
         activeDirection = null;
         movementGeneration += 1;
         clearMovementTimer();
+
+        if (movementAbortController !== null) {
+          movementAbortController.abort();
+          movementAbortController = null;
+        }
+
+        if (!wasMoving && !force) {
+          return;
+        }
 
         fetch("/api/rover/stop", {
           method: "POST",
@@ -239,9 +273,12 @@
 
       function emergencyStop() {
         pressedKeys.length = 0;
-        stopMove();
+        stopMove(true);
       }
 
+      // Catch releases even when they happen outside the original button.
+      document.addEventListener("pointerup", () => stopMove());
+      document.addEventListener("pointercancel", () => stopMove());
       window.addEventListener("blur", emergencyStop);
       window.addEventListener("pagehide", emergencyStop);
       document.addEventListener("visibilitychange", () => {
