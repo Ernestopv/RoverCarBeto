@@ -1,205 +1,334 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Rover Web Controller</title>
-    <link rel="stylesheet" href="/style.css">
-</head>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
 
-<body>
+  <body>
     <h1>__DESCRIPTION__</h1>
 
     <div class="status-row">
-        <div class="battery-card">
-            <div class="battery-title">Battery</div>
+      <div class="battery-card">
+        <div class="battery-title">Battery</div>
 
-            <div class="battery-icon" aria-label="Rover battery">
-                <div class="battery-icon-level" id="battery-icon-level">
-  	<div class="battery-fill" id="battery-fill"></div>
-	</div>
-            </div>
-
-            <div class="battery-sub">
-                <span id="battery-percent">--%</span>
-                &middot;
-                <span id="battery-status">Waiting for telemetry...</span>
-            </div>
+        <div class="battery-icon" aria-label="Rover battery">
+          <div class="battery-icon-level" id="battery-icon-level">
+            <div class="battery-fill" id="battery-fill"></div>
+          </div>
         </div>
+
+        <div class="battery-sub">
+          <span id="battery-percent">--%</span>
+          &middot;
+          <span id="battery-status">Waiting for telemetry...</span>
+        </div>
+      </div>
     </div>
 
-    <img class="camera" src="/stream.mjpg" alt="Camera">
-    <br>
+    <img class="camera" src="/stream.mjpg" alt="Camera" />
+    <br />
 
     <div class="slider-container">
-        <label for="speed">Speed: </label>
-        <input
-            id="speed"
-            type="range"
-            min="0"
-            max="1"
-            step="0.05"
-            value="0.30"
-        >
-        <span id="speed-val">0.30</span>
+      <label for="speed">Speed: </label>
+      <input id="speed" type="range" min="0" max="1" step="0.05" value="0.30" />
+      <span id="speed-val">0.30</span>
     </div>
 
     <div class="dpad-container">
-        <button
-            class="control"
-            id="forward"
-            onpointerdown="startMove('forward')"
-            onpointerup="stopMove()"
-            onpointercancel="stopMove()"
-            onpointerleave="stopMove()"
-        >&#9650;</button>
+      <button
+        class="control"
+        id="forward"
+        aria-label="Forward"
+        onpointerdown="startMove('forward')"
+        onpointerup="stopMove()"
+        onpointercancel="stopMove()"
+        onpointerleave="stopMove()"
+      >
+        &#9650;
+      </button>
 
-        <button
-            class="control"
-            id="left"
-            onpointerdown="startMove('left')"
-            onpointerup="stopMove()"
-            onpointercancel="stopMove()"
-            onpointerleave="stopMove()"
-        >&#9664;</button>
+      <button
+        class="control"
+        id="left"
+        aria-label="Left"
+        onpointerdown="startMove('left')"
+        onpointerup="stopMove()"
+        onpointercancel="stopMove()"
+        onpointerleave="stopMove()"
+      >
+        &#9664;
+      </button>
 
-        <button
-            class="control stop"
-            id="stop"
-            onclick="stopMove()"
-        >&#9632;</button>
+      <button
+        class="control stop"
+        id="stop"
+        aria-label="Stop"
+        onclick="stopMove()"
+      >
+        &#9632;
+      </button>
 
-        <button
-            class="control"
-            id="right"
-            onpointerdown="startMove('right')"
-            onpointerup="stopMove()"
-            onpointercancel="stopMove()"
-            onpointerleave="stopMove()"
-        >&#9654;</button>
+      <button
+        class="control"
+        id="right"
+        aria-label="Right"
+        onpointerdown="startMove('right')"
+        onpointerup="stopMove()"
+        onpointercancel="stopMove()"
+        onpointerleave="stopMove()"
+      >
+        &#9654;
+      </button>
 
-        <button
-            class="control"
-            id="backward"
-            onpointerdown="startMove('backward')"
-            onpointerup="stopMove()"
-            onpointercancel="stopMove()"
-            onpointerleave="stopMove()"
-        >&#9660;</button>
+      <button
+        class="control"
+        id="backward"
+        aria-label="Backward"
+        onpointerdown="startMove('backward')"
+        onpointerup="stopMove()"
+        onpointercancel="stopMove()"
+        onpointerleave="stopMove()"
+      >
+        &#9660;
+      </button>
     </div>
 
     <p>IMX500 - __WIDTH__x__HEIGHT__ - __FPS__ FPS</p>
 
     <script>
-        const speedInput = document.getElementById('speed');
-        const speedValDisplay = document.getElementById('speed-val');
+      const MOVE_REFRESH_MS = 500;
+      const speedInput = document.getElementById("speed");
+      const speedValDisplay = document.getElementById("speed-val");
 
-        speedInput.addEventListener('input', () => {
-            speedValDisplay.innerText = speedInput.value;
-        });
+      let activeDirection = null;
+      let movementTimer = null;
+      let movementGeneration = 0;
+      const pressedKeys = [];
 
-        function startMove(dir) {
-            const speed = parseFloat(speedInput.value);
+      const keyDirections = {
+        ArrowUp: "forward",
+        ArrowDown: "backward",
+        ArrowLeft: "left",
+        ArrowRight: "right",
+        w: "forward",
+        s: "backward",
+        a: "left",
+        d: "right",
+      };
 
-            fetch('/api/rover/' + dir, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    speed: speed
-                })
-            }).catch(err => console.error('Move error:', err));
+      speedInput.addEventListener("input", () => {
+        speedValDisplay.innerText = Number(speedInput.value).toFixed(2);
+      });
+
+      function clearMovementTimer() {
+        if (movementTimer !== null) {
+          clearTimeout(movementTimer);
+          movementTimer = null;
+        }
+      }
+
+      async function sendMovement(generation) {
+        if (generation !== movementGeneration || activeDirection === null) {
+          return;
         }
 
-        function stopMove() {
-            fetch('/api/rover/stop', {
-                method: 'POST'
-            }).catch(err => console.error('Stop error:', err));
-        }
+        const direction = activeDirection;
+        const speed = Number(speedInput.value);
 
-        function estimateBatteryPercent(voltage) {
-            // Simple estimate for a 3S Li-ion battery.
-            // Voltage is the real reading; percentage is approximate.
-            const minV = 9.9;
-            const maxV = 12.6;
-            const pct = ((voltage - minV) / (maxV - minV)) * 100;
+        try {
+          const response = await fetch("/api/rover/" + direction, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ speed: speed }),
+          });
 
-            return Math.max(
-                0,
-                Math.min(100, Math.round(pct))
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+        } catch (err) {
+          console.error("Move error:", err);
+        } finally {
+          if (generation === movementGeneration && activeDirection !== null) {
+            movementTimer = setTimeout(
+              () => sendMovement(generation),
+              MOVE_REFRESH_MS,
             );
+          }
+        }
+      }
+
+      function startMove(direction) {
+        if (!["forward", "backward", "left", "right"].includes(direction)) {
+          return;
         }
 
-        function updateBatteryDisplay(voltage) {
-            const percentEl = document.getElementById('battery-percent');
-            const statusEl = document.getElementById('battery-status');
-            const fillEl = document.getElementById('battery-fill');
-            const iconLevelEl = document.getElementById('battery-icon-level');
+        clearMovementTimer();
+        activeDirection = direction;
+        movementGeneration += 1;
+        sendMovement(movementGeneration);
+      }
 
-            if (!Number.isFinite(voltage)) {
-                percentEl.textContent = '--%';
-                statusEl.textContent = 'No data';
-                fillEl.style.width = '0%';
-                iconLevelEl.style.width = '0%';
-                fillEl.style.background = '#6b7280';
-                iconLevelEl.style.background = '#6b7280';
-                return;
-            }
+      function stopMove() {
+        activeDirection = null;
+        movementGeneration += 1;
+        clearMovementTimer();
 
-            const percent = estimateBatteryPercent(voltage);
+        fetch("/api/rover/stop", {
+          method: "POST",
+          keepalive: true,
+        }).catch((err) => console.error("Stop error:", err));
+      }
 
-            percentEl.textContent = percent + '%';
-            fillEl.style.width = percent + '%';
-            iconLevelEl.style.width = percent + '%';
+      function normalizeControlKey(event) {
+        return event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      }
 
-            if (percent >= 60) {
-                statusEl.textContent = 'Good';
-                fillEl.style.background = '#22c55e';
-                iconLevelEl.style.background = '#22c55e';
-            } else if (percent >= 30) {
-                statusEl.textContent = 'Medium';
-                fillEl.style.background = '#eab308';
-                iconLevelEl.style.background = '#eab308';
-            } else {
-                statusEl.textContent = 'Low';
-                fillEl.style.background = '#ef4444';
-                iconLevelEl.style.background = '#ef4444';
-            }
+      function isInteractiveElement(element) {
+        return (
+          element instanceof HTMLElement &&
+          ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName)
+        );
+      }
+
+      document.addEventListener("keydown", (event) => {
+        if (isInteractiveElement(event.target)) {
+          return;
         }
 
-        async function refreshBattery() {
-            try {
-                const response = await fetch('/api/rover/battery', {
-                    method: 'GET',
-                    cache: 'no-store'
-                });
+        const key = normalizeControlKey(event);
+        const direction = keyDirections[key];
 
-                if (!response.ok) {
-                    throw new Error('HTTP ' + response.status);
-                }
-
-                const data = await response.json();
-
-                if (!data.ok || data.voltage == null) {
-                    throw new Error(data.error || 'No battery data');
-                }
-
-                const voltage = Number(data.voltage);
-
-                if (!Number.isFinite(voltage)) {
-                    throw new Error('Invalid voltage');
-                }
-
-                updateBatteryDisplay(voltage);
-            } catch (err) {
-                console.error('Battery error:', err);
-                updateBatteryDisplay(NaN);
-            }
+        if (!direction) {
+          return;
         }
 
-        refreshBattery();
-        setInterval(refreshBattery, 3000);
+        event.preventDefault();
+
+        if (event.repeat || pressedKeys.includes(key)) {
+          return;
+        }
+
+        pressedKeys.push(key);
+        startMove(direction);
+      });
+
+      document.addEventListener("keyup", (event) => {
+        const key = normalizeControlKey(event);
+        const index = pressedKeys.indexOf(key);
+
+        if (index === -1) {
+          return;
+        }
+
+        event.preventDefault();
+        pressedKeys.splice(index, 1);
+
+        const remainingKey = pressedKeys[pressedKeys.length - 1];
+
+        if (remainingKey) {
+          startMove(keyDirections[remainingKey]);
+        } else {
+          stopMove();
+        }
+      });
+
+      function emergencyStop() {
+        pressedKeys.length = 0;
+        stopMove();
+      }
+
+      window.addEventListener("blur", emergencyStop);
+      window.addEventListener("pagehide", emergencyStop);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+          emergencyStop();
+        }
+      });
+
+      function estimateBatteryPercent(voltage) {
+        // Simple estimate for a 3S Li-ion battery.
+        // Voltage is the real reading; percentage is approximate.
+        const minV = 9.9;
+        const maxV = 12.6;
+        const pct = ((voltage - minV) / (maxV - minV)) * 100;
+
+        return Math.max(0, Math.min(100, Math.round(pct)));
+      }
+
+      function updateBatteryDisplay(voltage) {
+        const percentEl = document.getElementById("battery-percent");
+        const statusEl = document.getElementById("battery-status");
+        const fillEl = document.getElementById("battery-fill");
+        const iconLevelEl = document.getElementById("battery-icon-level");
+
+        if (!Number.isFinite(voltage)) {
+          percentEl.textContent = "--%";
+          statusEl.textContent = "No data";
+          fillEl.style.width = "0%";
+          iconLevelEl.style.width = "0%";
+          fillEl.style.background = "#6b7280";
+          iconLevelEl.style.background = "#6b7280";
+          return;
+        }
+
+        const percent = estimateBatteryPercent(voltage);
+
+        percentEl.textContent = percent + "%";
+        fillEl.style.width = percent + "%";
+        iconLevelEl.style.width = percent + "%";
+
+        if (percent >= 60) {
+          statusEl.textContent = "Good";
+          fillEl.style.background = "#22c55e";
+          iconLevelEl.style.background = "#22c55e";
+        } else if (percent >= 30) {
+          statusEl.textContent = "Medium";
+          fillEl.style.background = "#eab308";
+          iconLevelEl.style.background = "#eab308";
+        } else {
+          statusEl.textContent = "Low";
+          fillEl.style.background = "#ef4444";
+          iconLevelEl.style.background = "#ef4444";
+        }
+      }
+
+      async function refreshBattery() {
+        try {
+          const response = await fetch("/api/rover/battery", {
+            method: "GET",
+            cache: "no-store",
+          });
+
+          if (!response.ok) {
+            throw new Error("HTTP " + response.status);
+          }
+
+          const data = await response.json();
+
+          if (!data.ok || data.voltage == null) {
+            throw new Error(data.error || "No battery data");
+          }
+
+          const voltage = Number(data.voltage);
+
+          if (!Number.isFinite(voltage)) {
+            throw new Error("Invalid voltage");
+          }
+
+          updateBatteryDisplay(voltage);
+        } catch (err) {
+          console.error("Battery error:", err);
+          updateBatteryDisplay(NaN);
+        }
+      }
+
+      refreshBattery();
+      setInterval(refreshBattery, 3000);
     </script>
-</body>
+  </body>
 </html>
