@@ -270,6 +270,16 @@ def heartbeat_loop():
             time.sleep(HEARTBEAT_INTERVAL)
 
 
+def confirm_stop_after_pending_commands():
+    """Send a final stop after any command that was already in progress."""
+    with command_lock:
+        with state_lock:
+            still_stopped = not heartbeat_enabled and current_direction == "stop"
+
+        if still_stopped:
+            send_rover_command(0, 0)
+
+
 # ============================================================
 # API ROUTES
 # ============================================================
@@ -515,14 +525,20 @@ def directional_move(direction_name):
 def stop():
     global heartbeat_enabled
 
-    with command_lock:
-        with state_lock:
-            heartbeat_enabled = False
-
-        response = send_rover_command(0, 0)
-
-        # Stop the motors without forgetting the user's selected speed.
+    # Give STOP priority: update state and contact the rover immediately,
+    # without waiting for a heartbeat or movement request holding command_lock.
+    with state_lock:
+        heartbeat_enabled = False
         set_state(0, 0, 0, "stop")
+
+    response = send_rover_command(0, 0)
+
+    # If an older movement command was already in progress, send a second stop
+    # after it finishes so a stale command can never become the final command.
+    threading.Thread(
+        target=confirm_stop_after_pending_commands,
+        daemon=True
+    ).start()
 
     return jsonify({
         "ok": True,
