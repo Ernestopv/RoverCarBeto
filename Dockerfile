@@ -55,7 +55,9 @@ RUN if [ "${TARGETARCH}" = "arm64" ]; then \
 # ------------------------------------------------------------
 # Application
 # ------------------------------------------------------------
-COPY api.py ui.py index.html style.css /app/
+COPY api.py ui.py /app/
+
+COPY static/ /app/static/
 
 COPY simulator/ /app/simulator/
 
