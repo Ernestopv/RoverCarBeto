@@ -20,6 +20,10 @@ API = f"{BASE_URL}/api/rover"
 SIM = f"{BASE_URL}/simulator"
 UI = BASE_URL
 
+# Public UI/API speed is normalized as 0.0 .. 1.0.
+# WAVE ROVER T=1 expects motor values in -0.5 .. +0.5.
+ROVER_COMMAND_MAX = float(os.getenv("TEST_ROVER_COMMAND_MAX", "0.5"))
+
 
 def req(url, method="GET", payload=None, timeout=5):
     data = None
@@ -58,6 +62,11 @@ def close(a, b, tol=1e-6):
     ), (a, b)
 
 
+def expected_motor(speed, direction=1):
+    """Convert normalized API speed to raw WAVE ROVER T=1 motor value."""
+    return float(direction) * float(speed) * ROVER_COMMAND_MAX
+
+
 def reset():
     req(f"{SIM}/reset", "POST")
 
@@ -88,7 +97,6 @@ def wait_for_state(predicate, timeout=2.0, interval=0.05):
 
 
 def test_services():
-    # Everything is intentionally tested through nginx :8000.
     assert req(f"{BASE_URL}/health")[0] == 200
     assert req(f"{UI}/")[0] == 200
     assert req(f"{SIM}/health")[0] == 200
@@ -108,8 +116,8 @@ def test_forward_command_and_motion():
 
         command_state = state()
 
-        close(command_state["left"], 0.30)
-        close(command_state["right"], 0.30)
+        close(command_state["left"], expected_motor(0.30))
+        close(command_state["right"], expected_motor(0.30))
 
         after = wait_for_state(
             lambda s: float(s["x"]) > float(before["x"]),
@@ -138,8 +146,8 @@ def test_left_turn():
 
         command_state = state()
 
-        close(command_state["left"], -0.20)
-        close(command_state["right"], 0.20)
+        close(command_state["left"], expected_motor(0.20, -1))
+        close(command_state["right"], expected_motor(0.20, 1))
 
         after = wait_for_state(
             lambda s: float(s["heading_degrees"]) > 0,
@@ -165,8 +173,8 @@ def test_right_turn():
 
         command_state = state()
 
-        close(command_state["left"], 0.20)
-        close(command_state["right"], -0.20)
+        close(command_state["left"], expected_motor(0.20, 1))
+        close(command_state["right"], expected_motor(0.20, -1))
 
         after = wait_for_state(
             lambda s: float(s["heading_degrees"]) < 0,
@@ -175,6 +183,29 @@ def test_right_turn():
 
         assert after is not None
         assert after["heading_degrees"] < 0, after
+
+    finally:
+        stop()
+
+
+def test_speed_scaling_75_percent():
+    """
+    75% in the public API must become 0.375 in WAVE ROVER T=1:
+        0.75 * 0.5 = 0.375
+    """
+    reset()
+
+    try:
+        req(
+            f"{API}/forward",
+            "POST",
+            {"speed": 0.75},
+        )
+
+        command_state = state()
+
+        close(command_state["left"], expected_motor(0.75))
+        close(command_state["right"], expected_motor(0.75))
 
     finally:
         stop()
@@ -210,7 +241,6 @@ def test_battery_scenario_and_endpoint():
         close(body["voltage"], 10.4, 0.02)
 
     finally:
-        # Restore normal battery level even if the assertion fails.
         req(
             f"{SIM}/scenario",
             "POST",
@@ -233,7 +263,6 @@ def test_simulated_latency():
         assert elapsed >= 0.20, elapsed
 
     finally:
-        # Never leave latency enabled for the next test.
         req(
             f"{SIM}/scenario",
             "POST",
