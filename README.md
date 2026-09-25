@@ -57,7 +57,7 @@ The development environment runs four services inside the Docker container:
 
 ## CI/CD Diagram
 
-![alt text](image.png)
+![alt text](diagrams/ci-cd.png)
 
 ## Related repositories
 
