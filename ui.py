@@ -119,7 +119,6 @@ API_BASE_URL = (
 )
 
 
-
 # UI FILES
 
 BASE_DIR = Path(__file__).resolve().parent / "static"
