@@ -56,7 +56,7 @@ API_BASE_URL = (
 )
 
 # UI FILES
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent / "static"
 INDEX_FILE = BASE_DIR / "index.html"
 STYLE_FILE = BASE_DIR / "style.css"
 

@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#09111f" />
+    <title>Rover Control Station</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="bg-glow glow-one" aria-hidden="true"></div>
+    <div class="bg-glow glow-two" aria-hidden="true"></div>
+
+    <div class="app-shell">
+      <header class="topbar card">
+        <div class="brand-wrap">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <div class="brand-text">
+            <p class="eyebrow">REMOTE OPERATIONS</p>
+            <h1>__DESCRIPTION__</h1>
+          </div>
+        </div>
+
+        <div class="header-side">
+          <div class="status-chip" id="connection-chip" data-state="connecting">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="connection-label">Connecting</span>
+          </div>
+          <time class="clock" id="clock" aria-label="Local time">--:--:--</time>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="main-column">
+          <article class="camera-card card">
+            <div class="section-head camera-head">
+              <p class="eyebrow">LIVE FEED</p>
+              <div class="live-badge">
+                <span aria-hidden="true"></span> LIVE
+              </div>
+            </div>
+
+            <div class="camera-frame">
+              <img
+                class="camera"
+                id="camera"
+                src="/stream.mjpg"
+                alt="Rover camera"
+              />
+              <div class="camera-grid" aria-hidden="true"></div>
+              <div class="camera-corners" aria-hidden="true"></div>
+
+              <div class="camera-hud top-left">
+                <span>IMX500</span>
+                <span>__WIDTH__ × __HEIGHT__</span>
+              </div>
+              <div class="camera-hud top-right">
+                <span>__FPS__ FPS</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="controls-card card">
+            <div class="section-head controls-head">
+              <p class="eyebrow">MANUAL CONTROL</p>
+            </div>
+
+            <div class="dpad-wrap">
+              <div class="dpad-container" aria-label="Rover movement controls">
+                <button
+                  class="control"
+                  id="forward"
+                  type="button"
+                  aria-label="Forward"
+                  onpointerdown="startMove('forward')"
+                  onpointerup="stopMove()"
+                  onpointercancel="stopMove()"
+                  onpointerleave="stopMove()"
+                >
+                  <span class="arrow">↑</span>
+                  <small>FORWARD</small>
+                </button>
+
+                <button
+                  class="control"
+                  id="left"
+                  type="button"
+                  aria-label="Left"
+                  onpointerdown="startMove('left')"
+                  onpointerup="stopMove()"
+                  onpointercancel="stopMove()"
+                  onpointerleave="stopMove()"
+                >
+                  <span class="arrow">←</span>
+                  <small>LEFT</small>
+                </button>
+
+                <button
+                  class="control stop"
+                  id="stop"
+                  type="button"
+                  aria-label="Stop"
+                  onclick="stopMove(true)"
+                >
+                  <span class="stop-square" aria-hidden="true"></span>
+                  <small>STOP</small>
+                </button>
+
+                <button
+                  class="control"
+                  id="right"
+                  type="button"
+                  aria-label="Right"
+                  onpointerdown="startMove('right')"
+                  onpointerup="stopMove()"
+                  onpointercancel="stopMove()"
+                  onpointerleave="stopMove()"
+                >
+                  <span class="arrow">→</span>
+                  <small>RIGHT</small>
+                </button>
+
+                <button
+                  class="control"
+                  id="backward"
+                  type="button"
+                  aria-label="Backward"
+                  onpointerdown="startMove('backward')"
+                  onpointerup="stopMove()"
+                  onpointercancel="stopMove()"
+                  onpointerleave="stopMove()"
+                >
+                  <span class="arrow">↓</span>
+                  <small>REVERSE</small>
+                </button>
+              </div>
+
+              <div class="dpad-instructions">
+                <span class="instruction-title">Keyboard controls</span>
+                <div class="keyboard-hint">
+                  <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+                  <span>or</span>
+                  <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd>
+                  <span class="hint-separator">·</span>
+                  <span><kbd>Space</kbd> = Stop</span>
+                </div>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <aside class="sidebar-column">
+          <article class="card side-card speed-card" aria-label="Speed control">
+            <div class="section-head compact-head">
+              <div>
+                <p class="eyebrow">DRIVE</p>
+                <h2>Speed</h2>
+              </div>
+              <span class="panel-icon" aria-hidden="true">⚡</span>
+            </div>
+
+            <div class="speed-readout">
+              <span class="speed-number" id="speed-val">0.30</span>
+              <span class="speed-unit">POWER</span>
+            </div>
+
+            <div class="speed-slider-block">
+              <div class="slider-scale">
+                <span>0.00</span>
+                <span>1.00</span>
+              </div>
+              <input
+                id="speed"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value="0.30"
+                aria-label="Rover speed"
+              />
+            </div>
+
+            <div class="quick-speeds" aria-label="Quick speed presets">
+              <button type="button" data-speed="0.25">25%</button>
+              <button type="button" data-speed="0.50">50%</button>
+              <button type="button" data-speed="0.75">75%</button>
+            </div>
+          </article>
+
+          <article
+            class="card side-card battery-card"
+            aria-label="Rover battery status"
+            data-level="unknown"
+          >
+            <div class="section-head compact-head">
+              <div>
+                <p class="eyebrow">SYSTEM</p>
+                <h2>Battery</h2>
+              </div>
+              <span class="panel-icon" aria-hidden="true">⌁</span>
+            </div>
+
+            <div class="battery-topline">
+              <div>
+                <span class="mini-label">Charge level</span>
+                <div class="battery-main-number" id="battery-percent">--%</div>
+              </div>
+
+              <div class="battery-state-wrap">
+                <span class="battery-status-pill" id="battery-status"
+                  >Waiting...</span
+                >
+                <strong id="battery-voltage">-- V</strong>
+              </div>
+            </div>
+
+            <div class="battery-bar-shell" aria-hidden="true">
+              <div class="battery-bar-level" id="battery-icon-level"></div>
+            </div>
+          </article>
+        </aside>
+      </main>
+
+      <footer class="footer-bar">
+        <span
+          ><span class="footer-dot" aria-hidden="true"></span>Rover control
+          interface</span
+        >
+        <span>Hold a direction to move · Release to stop</span>
+      </footer>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script>
+      const MOVE_REFRESH_MS = 500;
+      const BATTERY_REFRESH_MS = 3000;
+
+      const speedInput = document.getElementById("speed");
+      const speedValDisplay = document.getElementById("speed-val");
+      const connectionChip = document.getElementById("connection-chip");
+      const connectionLabel = document.getElementById("connection-label");
+      const clockEl = document.getElementById("clock");
+      const toast = document.getElementById("toast");
+      const camera = document.getElementById("camera");
+
+      const batteryPercentEl = document.getElementById("battery-percent");
+      const batteryStatusEl = document.getElementById("battery-status");
+      const batteryVoltageEl = document.getElementById("battery-voltage");
+      const batteryLevelEl = document.getElementById("battery-icon-level");
+      const batteryCard = document.querySelector(".battery-card");
+
+      let activeDirection = null;
+      let movementTimer = null;
+      let movementAbortController = null;
+      let movementGeneration = 0;
+      let toastTimer = null;
+      const pressedKeys = [];
+
+      const keyDirections = {
+        ArrowUp: "forward",
+        ArrowDown: "backward",
+        ArrowLeft: "left",
+        ArrowRight: "right",
+        w: "forward",
+        s: "backward",
+        a: "left",
+        d: "right",
+      };
+
+      function setConnection(state, label) {
+        connectionChip.dataset.state = state;
+        connectionLabel.textContent = label;
+      }
+
+      function setActiveControl(direction = null) {
+        document.querySelectorAll(".control").forEach((button) => {
+          button.classList.toggle("is-active", button.id === direction);
+        });
+      }
+
+      function showToast(message, type = "info") {
+        clearTimeout(toastTimer);
+        toast.textContent = message;
+        toast.dataset.type = type;
+        toast.classList.add("show");
+        toastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+      }
+
+      function updateClock() {
+        clockEl.textContent = new Intl.DateTimeFormat(undefined, {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        }).format(new Date());
+      }
+
+      function updateSpeedVisual() {
+        const value = Number(speedInput.value);
+        const pct = Math.max(0, Math.min(100, value * 100));
+
+        speedValDisplay.textContent = value.toFixed(2);
+        speedInput.style.setProperty("--speed-pct", pct + "%");
+
+        document.querySelectorAll("[data-speed]").forEach((button) => {
+          button.classList.toggle(
+            "active",
+            Math.abs(Number(button.dataset.speed) - value) < 0.001,
+          );
+        });
+      }
+
+      speedInput.addEventListener("input", updateSpeedVisual);
+
+      document.querySelectorAll("[data-speed]").forEach((button) => {
+        button.addEventListener("click", () => {
+          speedInput.value = button.dataset.speed;
+          updateSpeedVisual();
+          showToast(
+            `Speed set to ${Math.round(Number(button.dataset.speed) * 100)}%`,
+          );
+        });
+      });
+
+      function clearMovementTimer() {
+        if (movementTimer !== null) {
+          clearTimeout(movementTimer);
+          movementTimer = null;
+        }
+      }
+
+      async function sendMovement(generation) {
+        if (generation !== movementGeneration || activeDirection === null)
+          return;
+
+        const direction = activeDirection;
+        const speed = Number(speedInput.value);
+        const abortController = new AbortController();
+        movementAbortController = abortController;
+
+        try {
+          const response = await fetch(`/api/rover/${direction}`, {
+            method: "POST",
+            signal: abortController.signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ speed }),
+          });
+
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          setConnection("online", "Online");
+        } catch (error) {
+          if (error.name !== "AbortError") {
+            console.error("Move error:", error);
+            setConnection("error", "Control error");
+            showToast("Movement command failed", "error");
+          }
+        } finally {
+          if (movementAbortController === abortController) {
+            movementAbortController = null;
+          }
+
+          if (generation === movementGeneration && activeDirection !== null) {
+            movementTimer = setTimeout(
+              () => sendMovement(generation),
+              MOVE_REFRESH_MS,
+            );
+          }
+        }
+      }
+
+      function startMove(direction) {
+        if (!["forward", "backward", "left", "right"].includes(direction))
+          return;
+
+        clearMovementTimer();
+
+        if (movementAbortController !== null) {
+          movementAbortController.abort();
+          movementAbortController = null;
+        }
+
+        activeDirection = direction;
+        movementGeneration += 1;
+        setActiveControl(direction);
+
+        if (navigator.vibrate) navigator.vibrate(12);
+        sendMovement(movementGeneration);
+      }
+
+      function stopMove(force = false) {
+        const wasMoving = activeDirection !== null;
+
+        activeDirection = null;
+        movementGeneration += 1;
+        clearMovementTimer();
+        setActiveControl();
+
+        if (movementAbortController !== null) {
+          movementAbortController.abort();
+          movementAbortController = null;
+        }
+
+        if (!wasMoving && !force) return;
+
+        fetch("/api/rover/stop", {
+          method: "POST",
+          keepalive: true,
+        })
+          .then((response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            setConnection("online", "Online");
+          })
+          .catch((error) => {
+            console.error("Stop error:", error);
+            setConnection("error", "Stop error");
+          });
+      }
+
+      function normalizeControlKey(event) {
+        return event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      }
+
+      function isInteractiveElement(element) {
+        return (
+          element instanceof HTMLElement &&
+          ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(element.tagName)
+        );
+      }
+
+      function forceStop() {
+        pressedKeys.length = 0;
+        stopMove(true);
+      }
+
+      document.addEventListener("keydown", (event) => {
+        if (isInteractiveElement(event.target)) return;
+
+        const key = normalizeControlKey(event);
+
+        if (key === " ") {
+          event.preventDefault();
+          forceStop();
+          showToast("Stopped");
+          return;
+        }
+
+        const direction = keyDirections[key];
+        if (!direction) return;
+
+        event.preventDefault();
+        if (event.repeat || pressedKeys.includes(key)) return;
+
+        pressedKeys.push(key);
+        startMove(direction);
+      });
+
+      document.addEventListener("keyup", (event) => {
+        const key = normalizeControlKey(event);
+        const index = pressedKeys.indexOf(key);
+
+        if (index === -1) return;
+
+        event.preventDefault();
+        pressedKeys.splice(index, 1);
+
+        const remainingKey = pressedKeys[pressedKeys.length - 1];
+        remainingKey ? startMove(keyDirections[remainingKey]) : stopMove();
+      });
+
+      document.addEventListener("pointerup", () => stopMove());
+      document.addEventListener("pointercancel", () => stopMove());
+      window.addEventListener("blur", forceStop);
+      window.addEventListener("pagehide", forceStop);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) forceStop();
+      });
+
+      function estimateBatteryPercent(voltage) {
+        const minV = 9.9;
+        const maxV = 12.6;
+        const pct = ((voltage - minV) / (maxV - minV)) * 100;
+        return Math.max(0, Math.min(100, Math.round(pct)));
+      }
+
+      function setBatteryUnavailable() {
+        batteryPercentEl.textContent = "--%";
+        batteryStatusEl.textContent = "No data";
+        batteryVoltageEl.textContent = "-- V";
+        batteryLevelEl.style.width = "0%";
+        batteryCard.dataset.level = "unknown";
+      }
+
+      function updateBatteryDisplay(percent, voltage = NaN) {
+        const safePercent = Math.max(0, Math.min(100, Math.round(percent)));
+
+        batteryPercentEl.textContent = `${safePercent}%`;
+        batteryLevelEl.style.width = `${safePercent}%`;
+        batteryVoltageEl.textContent = Number.isFinite(voltage)
+          ? `${voltage.toFixed(2)} V`
+          : "-- V";
+
+        if (safePercent >= 60) {
+          batteryStatusEl.textContent = "Good";
+          batteryCard.dataset.level = "good";
+        } else if (safePercent >= 30) {
+          batteryStatusEl.textContent = "Medium";
+          batteryCard.dataset.level = "medium";
+        } else {
+          batteryStatusEl.textContent = "Low";
+          batteryCard.dataset.level = "low";
+        }
+      }
+
+      async function refreshBattery() {
+        try {
+          const response = await fetch("/api/rover/battery", {
+            method: "GET",
+            cache: "no-store",
+          });
+
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+          const data = await response.json();
+          if (data.ok === false)
+            throw new Error(data.error || "Battery request failed");
+
+          const voltage = Number(
+            data.voltage ?? data.battery_voltage ?? data.v,
+          );
+          const directPercent = Number(
+            data.percent ?? data.percentage ?? data.battery_percent,
+          );
+
+          if (Number.isFinite(directPercent)) {
+            updateBatteryDisplay(directPercent, voltage);
+          } else if (Number.isFinite(voltage)) {
+            updateBatteryDisplay(estimateBatteryPercent(voltage), voltage);
+          } else {
+            throw new Error(
+              "Battery response has no valid voltage or percentage",
+            );
+          }
+        } catch (error) {
+          console.error("Battery error:", error);
+          setBatteryUnavailable();
+        }
+      }
+
+      camera.addEventListener("load", () => setConnection("online", "Online"));
+      camera.addEventListener("error", () =>
+        setConnection("error", "Camera offline"),
+      );
+
+      // Start time first so it is never blocked by unrelated UI code.
+      updateClock();
+      setInterval(updateClock, 1000);
+
+      updateSpeedVisual();
+      setActiveControl();
+
+      refreshBattery();
+      setInterval(refreshBattery, BATTERY_REFRESH_MS);
+    </script>
+  </body>
+</html>
