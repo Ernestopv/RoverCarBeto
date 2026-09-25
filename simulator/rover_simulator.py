@@ -210,13 +210,13 @@ def classify_direction(left, right):
 
 
 
-    if left > eps and right < -eps:
+    if left < -eps and right > eps:
 
         return "left"
 
 
 
-    if left < -eps and right > eps:
+    if left > eps and right < -eps:
 
         return "right"
 
@@ -299,11 +299,10 @@ def physics_loop():
 
 
             linear = (v_right + v_left) / 2.0
-            # Wave Rover command convention used by api.py:
-            #   LEFT  -> L positive, R negative
-            #   RIGHT -> L negative, R positive
-            # Keep the simulator's angular sign consistent with that mapping.
-            angular = (v_left - v_right) / WHEEL_BASE
+            # Match the physical Wave Rover differential-drive convention:
+            #   LEFT  -> L negative, R positive
+            #   RIGHT -> L positive, R negative
+            angular = (v_right - v_left) / WHEEL_BASE
             state["linear_velocity"] = linear
 
             state["angular_velocity"] = angular

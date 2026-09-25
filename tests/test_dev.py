@@ -138,8 +138,8 @@ def test_left_turn():
 
         command_state = state()
 
-        close(command_state["left"], 0.20)
-        close(command_state["right"], -0.20)
+        close(command_state["left"], -0.20)
+        close(command_state["right"], 0.20)
 
         after = wait_for_state(
             lambda s: float(s["heading_degrees"]) > 0,
@@ -165,8 +165,8 @@ def test_right_turn():
 
         command_state = state()
 
-        close(command_state["left"], -0.20)
-        close(command_state["right"], 0.20)
+        close(command_state["left"], 0.20)
+        close(command_state["right"], -0.20)
 
         after = wait_for_state(
             lambda s: float(s["heading_degrees"]) < 0,
